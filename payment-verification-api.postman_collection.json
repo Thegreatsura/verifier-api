@@ -1,0 +1,443 @@
+{
+  "info": {
+    "name": "Payment Verification API",
+    "description": "Complete collection for Payment Verification API with support for CBE, Telebirr, Dashen, Abyssinia, CBE Birr, and Image verification",
+    "version": "2.0.0",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "key",
+        "value": "x-api-key",
+        "type": "string"
+      },
+      {
+        "key": "value",
+        "value": "{{API_KEY}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "https://verifyapi.leulzenebe.pro",
+      "type": "string"
+    },
+    {
+      "key": "API_KEY",
+      "value": "YOUR_API_KEY_HERE",
+      "type": "string"
+    },
+    {
+      "key": "ADMIN_KEY",
+      "value": "YOUR_ADMIN_KEY_HERE",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health & Info",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/health",
+              "host": ["{{BASE_URL}}"],
+              "path": ["health"]
+            },
+            "description": "Check if the API is running properly. No API key required."
+          },
+          "response": []
+        },
+        {
+          "name": "API Information",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/",
+              "host": ["{{BASE_URL}}"],
+              "path": [""]
+            },
+            "description": "Get information about the API and available endpoints."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "CBE Verification",
+      "item": [
+        {
+          "name": "Verify CBE Payment (POST)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"FT2513001V2G\",\n  \"accountSuffix\": \"39003377\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/verify-cbe",
+              "host": ["{{BASE_URL}}"],
+              "path": ["verify-cbe"]
+            },
+            "description": "Verify a CBE payment using reference number and account suffix."
+          },
+          "response": []
+        },
+        {
+          "name": "Verify CBE Payment (GET)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/verify-cbe?reference=FT2513001V2G&accountSuffix=39003377",
+              "host": ["{{BASE_URL}}"],
+              "path": ["verify-cbe"],
+              "query": [
+                {
+                  "key": "reference",
+                  "value": "FT2513001V2G"
+                },
+                {
+                  "key": "accountSuffix",
+                  "value": "39003377"
+                }
+              ]
+            },
+            "description": "Verify a CBE payment using query parameters."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Telebirr Verification",
+      "item": [
+        {
+          "name": "Verify Telebirr Payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"CE2513001XYT\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/verify-telebirr",
+              "host": ["{{BASE_URL}}"],
+              "path": ["verify-telebirr"]
+            },
+            "description": "Verify a Telebirr payment using reference number."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Dashen Verification",
+      "item": [
+        {
+          "name": "Verify Dashen Payment (POST)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"DASHEN_REFERENCE_NUMBER\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/verify-dashen",
+              "host": ["{{BASE_URL}}"],
+              "path": ["verify-dashen"]
+            },
+            "description": "Verify a Dashen bank transaction using reference number."
+          },
+          "response": []
+        },
+        {
+          "name": "Verify Dashen Payment (GET)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/verify-dashen?reference=DASHEN_REFERENCE_NUMBER",
+              "host": ["{{BASE_URL}}"],
+              "path": ["verify-dashen"],
+              "query": [
+                {
+                  "key": "reference",
+                  "value": "DASHEN_REFERENCE_NUMBER"
+                }
+              ]
+            },
+            "description": "Verify a Dashen bank transaction using query parameters."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Abyssinia Verification",
+      "item": [
+        {
+          "name": "Verify Abyssinia Payment (POST)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"ABYSSINIA_REFERENCE\",\n  \"suffix\": \"12345\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/verify-abyssinia",
+              "host": ["{{BASE_URL}}"],
+              "path": ["verify-abyssinia"]
+            },
+            "description": "Verify an Abyssinia bank transaction. Suffix must be exactly 5 digits."
+          },
+          "response": []
+        },
+        {
+          "name": "Verify Abyssinia Payment (GET)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/verify-abyssinia?reference=ABYSSINIA_REFERENCE&suffix=12345",
+              "host": ["{{BASE_URL}}"],
+              "path": ["verify-abyssinia"],
+              "query": [
+                {
+                  "key": "reference",
+                  "value": "ABYSSINIA_REFERENCE"
+                },
+                {
+                  "key": "suffix",
+                  "value": "12345"
+                }
+              ]
+            },
+            "description": "Verify an Abyssinia bank transaction using query parameters."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "CBE Birr Verification",
+      "item": [
+        {
+          "name": "Verify CBE Birr Payment (POST)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"receiptNumber\": \"RECEIPT_NUMBER\",\n  \"phoneNumber\": \"251912345678\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/verify-cbebirr",
+              "host": ["{{BASE_URL}}"],
+              "path": ["verify-cbebirr"]
+            },
+            "description": "Verify a CBE Birr payment. Phone number must be Ethiopian format (251 + 9 digits)."
+          },
+          "response": []
+        },
+        {
+          "name": "Verify CBE Birr Payment (GET)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/verify-cbebirr?receiptNumber=RECEIPT_NUMBER&phoneNumber=251912345678",
+              "host": ["{{BASE_URL}}"],
+              "path": ["verify-cbebirr"],
+              "query": [
+                {
+                  "key": "receiptNumber",
+                  "value": "RECEIPT_NUMBER"
+                },
+                {
+                  "key": "phoneNumber",
+                  "value": "251912345678"
+                }
+              ]
+            },
+            "description": "Verify a CBE Birr payment using query parameters."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Image Verification",
+      "item": [
+        {
+          "name": "Verify Payment by Image",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "/path/to/receipt/image.jpg"
+                },
+                {
+                  "key": "suffix",
+                  "value": "39003377",
+                  "description": "Required for CBE receipts - last 8 digits of account",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/verify-image?autoVerify=true",
+              "host": ["{{BASE_URL}}"],
+              "path": ["verify-image"],
+              "query": [
+                {
+                  "key": "autoVerify",
+                  "value": "true",
+                  "description": "Automatically detect receipt type and route to correct verification"
+                }
+              ]
+            },
+            "description": "Verify payment by uploading receipt image. Supports both CBE and Telebirr screenshots."
+          },
+          "response": []
+        },
+        {
+          "name": "Verify Payment by Image (Manual)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "/path/to/receipt/image.jpg"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/verify-image",
+              "host": ["{{BASE_URL}}"],
+              "path": ["verify-image"]
+            },
+            "description": "Verify payment by uploading receipt image without auto-verification."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Admin Endpoints",
+      "item": [
+        {
+          "name": "Generate API Key",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-admin-key",
+                "value": "{{ADMIN_KEY}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"owner\": \"user-identifier\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/admin/api-keys",
+              "host": ["{{BASE_URL}}"],
+              "path": ["admin", "api-keys"]
+            },
+            "description": "Generate a new API key. Requires admin authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "List API Keys",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-admin-key",
+                "value": "{{ADMIN_KEY}}"
+              }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/admin/api-keys",
+              "host": ["{{BASE_URL}}"],
+              "path": ["admin", "api-keys"]
+            },
+            "description": "List existing API keys (masked view). Requires admin authentication."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Usage Statistics",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-admin-key",
+                "value": "{{ADMIN_KEY}}"
+              }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/admin/stats",
+              "host": ["{{BASE_URL}}"],
+              "path": ["admin", "stats"]
+            },
+            "description": "Retrieve usage statistics including request counts, success/failure ratios, and response times."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

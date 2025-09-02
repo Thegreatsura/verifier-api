@@ -7,6 +7,9 @@ dotenv.config();
 
 import CBERouter from './routes/verifyCBERoute';
 import telebirrRouter from './routes/verifyTelebirrRoute';
+import dashenRouter from './routes/verifyDashenRoute';
+import abyssiniaRouter from './routes/verifyAbyssiniaRoute';
+import cbebirrRouter from './routes/verifyCBEBirrRoute';
 import adminRouter from './routes/adminRoute';
 import logger from './utils/logger';
 import { verifyImageHandler } from "./services/verifyImage";
@@ -64,6 +67,9 @@ app.use(jsonErrorHandler);
 // ✅ Attach routers to paths
 app.use('/verify-cbe', CBERouter);
 app.use('/verify-telebirr', telebirrRouter);
+app.use('/verify-dashen', dashenRouter);
+app.use('/verify-abyssinia', abyssiniaRouter);
+app.use('/verify-cbebirr', cbebirrRouter);
 app.post('/verify-image', verifyImageHandler);
 
 // Health check endpoint
@@ -79,6 +85,9 @@ app.get('/', (req: Request, res: Response) => {
         endpoints: [
             '/verify-cbe',
             '/verify-telebirr',
+            '/verify-dashen',
+            '/verify-abyssinia',
+            '/verify-cbebirr',
             '/verify-image'
         ]
     });

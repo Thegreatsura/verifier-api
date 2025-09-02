@@ -1,6 +1,6 @@
 # 📄 Payment Verification API
 
-This API provides verification services for payment transactions made through **Commercial Bank of Ethiopia (CBE)** and **Telebirr** mobile payment platforms in Ethiopia.  
+This API provides verification services for payment transactions made through **Commercial Bank of Ethiopia (CBE)**, **Telebirr**, **Dashen Bank**, **Bank of Abyssinia**, and **CBE Birr** mobile payment platforms in Ethiopia.  
 It allows applications to verify the authenticity and details of payment receipts by reference numbers or uploaded images.
 
 > ⚠️ **Disclaimer**: This is **not an official API**. I am **not affiliated with Ethio Telecom, Telebirr, or Commercial Bank of Ethiopia (CBE)**. This tool is built for personal and developer utility purposes only and scrapes publicly available data.
@@ -32,6 +32,39 @@ It allows applications to verify the authenticity and details of payment receipt
   - Settled amount
   - Service fees and VAT
   - Total paid amount
+
+### 🔷 Dashen Bank Payment Verification
+
+- Verifies Dashen bank transfers using reference number
+- Extracts comprehensive transaction details:
+  - Sender name and account number
+  - Transaction channel and service type
+  - Narrative/description
+  - Receiver name and phone number
+  - Institution name
+  - Transaction and transfer references
+  - Transaction date and amount
+  - Service charges, taxes, and fees breakdown
+  - Total amount
+
+### 🔶 Bank of Abyssinia Payment Verification
+
+- Verifies Bank of Abyssinia transfers using reference number and 5-digit suffix
+- Extracts key transaction details:
+  - Transaction reference and details
+  - Account information
+  - Payment amounts and dates
+  - Verification status
+
+### 🔷 CBE Birr Payment Verification
+
+- Verifies CBE Birr mobile money transfers using receipt number and phone number
+- Extracts transaction details:
+  - Receipt and transaction information
+  - Payer and receiver details
+  - Transaction amounts and fees
+  - Payment status and timestamps
+  - Ethiopian phone number validation (251 format)
 
 ### 🔷 Image-based Payment Verification
 
@@ -148,6 +181,86 @@ Verify a Telebirr payment using a reference number.
 
 ---
 
+### ✅ Dashen Bank Verification
+
+#### `POST /verify-dashen`
+
+Verify a Dashen bank payment using a reference number.
+
+**Requires API Key**
+
+**Request Body:**
+
+```json
+{
+  "reference": "DASHEN_REFERENCE_NUMBER"
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "senderName": "John Doe",
+  "senderAccountNumber": "1234567890",
+  "transactionChannel": "Mobile Banking",
+  "serviceType": "Fund Transfer",
+  "narrative": "Payment for services",
+  "receiverName": "Jane Smith",
+  "phoneNo": "251912345678",
+  "transactionReference": "TXN123456",
+  "transactionDate": "2023-06-15T10:30:00Z",
+  "transactionAmount": 1000.00,
+  "serviceCharge": 5.00,
+  "total": 1005.00
+}
+```
+
+---
+
+### ✅ Bank of Abyssinia Verification
+
+#### `POST /verify-abyssinia`
+
+Verify a Bank of Abyssinia payment using a reference number and 5-digit suffix.
+
+**Requires API Key**
+
+**Request Body:**
+
+```json
+{
+  "reference": "ABYSSINIA_REFERENCE",
+  "suffix": "12345"
+}
+```
+
+**Note:** The suffix must be exactly 5 digits.
+
+---
+
+### ✅ CBE Birr Verification
+
+#### `POST /verify-cbebirr`
+
+Verify a CBE Birr payment using receipt number and phone number.
+
+**Requires API Key**
+
+**Request Body:**
+
+```json
+{
+  "receiptNumber": "RECEIPT_NUMBER",
+  "phoneNumber": "251912345678"
+}
+```
+
+**Note:** Phone number must be in Ethiopian format (251 + 9 digits).
+
+---
+
 ### ✅ Image Verification
 
 #### `POST /verify-image`
@@ -183,6 +296,33 @@ curl -X POST https://verifyapi.leulzenebe.pro/verify-telebirr \
   -H "x-api-key: YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "reference": "CE2513001XYT" }'
+```
+
+### ✅ Dashen Bank
+
+```bash
+curl -X POST https://verifyapi.leulzenebe.pro/verify-dashen \
+  -H "x-api-key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "reference": "DASHEN_REFERENCE_NUMBER" }'
+```
+
+### ✅ Bank of Abyssinia
+
+```bash
+curl -X POST https://verifyapi.leulzenebe.pro/verify-abyssinia \
+  -H "x-api-key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "reference": "ABYSSINIA_REFERENCE", "suffix": "12345" }'
+```
+
+### ✅ CBE Birr
+
+```bash
+curl -X POST https://verifyapi.leulzenebe.pro/verify-cbebirr \
+  -H "x-api-key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "receiptNumber": "RECEIPT_NUMBER", "phoneNumber": "251912345678" }'
 ```
 
 ### ✅ Image
@@ -226,8 +366,8 @@ Get information about the API and available endpoints.
 ```json
 {
   "message": "Verifier API is running",
-  "version": "1.0.0",
-  "endpoints": ["/verify-cbe", "/verify-telebirr", "/verify-image"],
+  "version": "1.1.0",
+  "endpoints": ["/verify-cbe", "/verify-telebirr", "/verify-dashen", "/verify-abyssinia", "/verify-cbebirr", "/verify-image"],
   "health": "/health",
   "documentation": "https://github.com/Vixen878/verifier-api"
 }
@@ -325,6 +465,9 @@ LOG_LEVEL=debug
 |--------|-----------------------|------|------------------------------------|
 | POST   | `/verify-cbe`         | ✅    | CBE transaction by reference + suffix |
 | POST   | `/verify-telebirr`    | ✅    | Telebirr receipt by reference       |
+| POST   | `/verify-dashen`      | ✅    | Dashen bank transaction by reference |
+| POST   | `/verify-abyssinia`   | ✅    | Abyssinia bank transaction by reference + suffix |
+| POST   | `/verify-cbebirr`     | ✅    | CBE Birr transaction by receipt + phone |
 | POST   | `/verify-image`       | ✅    | Image upload for receipt OCR        |
 | GET    | `/health`             | ❌    | Health check                        |
 | GET    | `/`                   | ❌    | API metadata                        |
