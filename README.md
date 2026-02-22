@@ -11,7 +11,7 @@ It allows applications to verify the authenticity and details of payment receipt
 
 ### 🚀 Universal Verification (Smart Router)
 
-- **One endpoint to rule them all:** Verifies transactions from multiple providers (CBE, Telebirr, Dashen, Bank of Abyssinia, CBE Birr) using a single, intelligent endpoint (`POST /verify`). *Note: M-Pesa is currently supported via its dedicated endpoint only.*
+- **One endpoint to rule them all:** Verifies transactions from multiple providers (CBE, Telebirr, Dashen, Bank of Abyssinia, CBE Birr) using a single, intelligent endpoint (`POST /verify`). _Note: M-Pesa is currently supported via its dedicated endpoint only._
 - Automatically detects the provider based on the format of the provided `reference` number and accompanying JSON payload.
 - Strictly validates payloads and intelligently delegates to the correct backend service.
 
@@ -65,9 +65,8 @@ It allows applications to verify the authenticity and details of payment receipt
 
 ### 🔷 M-Pesa Payment Verification
 
-- Verifies M-Pesa mobile money transfers using receipt reference and phone number
+- Verifies M-Pesa mobile money transfers using receipt reference
 - Extracts transaction details from the generated receipt PDFs
-- Ethiopian phone number validation
 
 ### 🔷 CBE Birr Payment Verification
 
@@ -176,6 +175,7 @@ Verify a payment from multiple providers using a single endpoint. The API automa
 ```
 
 **Sorting Rules:**
+
 - **Dashen Bank**: `reference` must be 16 chars starting with 3 digits. No extra params.
 - **CBE**: `reference` must be 12 chars starting with `FT`. Requires 8-digit `suffix`.
 - **Bank of Abyssinia**: `reference` must be 12 chars starting with `FT`. Requires 5-digit `suffix`.
@@ -251,9 +251,9 @@ Verify a Dashen bank payment using a reference number.
   "phoneNo": "251912345678",
   "transactionReference": "TXN123456",
   "transactionDate": "2023-06-15T10:30:00Z",
-  "transactionAmount": 1000.00,
-  "serviceCharge": 5.00,
-  "total": 1005.00
+  "transactionAmount": 1000.0,
+  "serviceCharge": 5.0,
+  "total": 1005.0
 }
 ```
 
@@ -284,7 +284,7 @@ Verify a Bank of Abyssinia payment using a reference number and 5-digit suffix.
 
 #### `POST /verify-mpesa`
 
-Verify an M-Pesa payment using a receipt number (reference) and phone number.
+Verify an M-Pesa payment using a receipt number (reference).
 
 **Requires API Key**
 
@@ -292,12 +292,9 @@ Verify an M-Pesa payment using a receipt number (reference) and phone number.
 
 ```json
 {
-  "receiptNumber": "RECEIPT_REFERENCE",
-  "phoneNumber": "251912345678"
+  "receiptNumber": "RECEIPT_REFERENCE"
 }
 ```
-
-**Note:** Phone number must be in Ethiopian format (251 + 9 digits).
 
 ---
 
@@ -338,8 +335,6 @@ Multipart form-data with an image file.
 - **Note**: If the auto-detected receipt is from CBE, the request **must** include your `Suffix` (last 8 digits of your account).
 
 ---
-
-
 
 ## 🧪 Try It (Sample cURL Commands)
 
@@ -403,7 +398,7 @@ curl -X POST https://verifyapi.leulzenebe.pro/verify-cbebirr \
 curl -X POST https://verifyapi.leulzenebe.pro/verify-mpesa \
   -H "x-api-key: YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{ "receiptNumber": "RECEIPT_REFERENCE", "phoneNumber": "251912345678" }'
+  -d '{ "receiptNumber": "RECEIPT_REFERENCE" }'
 ```
 
 ### ✅ Image
@@ -448,7 +443,14 @@ Get information about the API and available endpoints.
 {
   "message": "Verifier API is running",
   "version": "2.1.0",
-  "endpoints": ["/verify-cbe", "/verify-telebirr", "/verify-dashen", "/verify-abyssinia", "/verify-cbebirr", "/verify-image"],
+  "endpoints": [
+    "/verify-cbe",
+    "/verify-telebirr",
+    "/verify-dashen",
+    "/verify-abyssinia",
+    "/verify-cbebirr",
+    "/verify-image"
+  ],
   "health": "/health",
   "documentation": "https://github.com/Vixen878/verifier-api"
 }
@@ -487,6 +489,7 @@ API Documentation: [https://verify.leul.et/docs](https://verify.leul.et/docs)
 ### `POST /admin/api-keys`
 
 Generate a new API key.
+
 ```json
 {
   "owner": "your-identifier"
@@ -500,11 +503,11 @@ List existing API keys (masked view).
 ### `GET /admin/stats`
 
 Retrieve usage statistics:
+
 - Request count by endpoint
 - Success/failure ratio
 - Average response time
 - Requests by IP
-
 
 ---
 
@@ -542,21 +545,20 @@ LOG_LEVEL=debug
 
 ## 📦 Endpoint Summary
 
-| Method | Endpoint              | Auth | Description                        |
-|--------|-----------------------|------|------------------------------------|
-| POST   | `/verify-cbe`         | ✅    | CBE transaction by reference + suffix |
-| POST   | `/verify-telebirr`    | ✅    | Telebirr receipt by reference       |
-| POST   | `/verify-dashen`      | ✅    | Dashen bank transaction by reference |
-| POST   | `/verify-abyssinia`   | ✅    | Abyssinia bank transaction by reference + suffix |
-| POST   | `/verify-cbebirr`     | ✅    | CBE Birr transaction by receipt + phone |
-| POST   | `/verify`             | ✅    | Smart universal verification router |
-| POST   | `/verify-image`       | ✅    | Image upload for receipt OCR        |
-| GET    | `/health`             | ❌    | Health check                        |
-| GET    | `/`                   | ❌    | API metadata                        |
-| GET    | `/admin/stats`        | 🔐    | API usage stats                     |
-| GET    | `/admin/api-keys`     | 🔐    | List all API keys                   |
-| POST   | `/admin/api-keys`     | 🔐    | Generate API key                    |
-
+| Method | Endpoint            | Auth | Description                                      |
+| ------ | ------------------- | ---- | ------------------------------------------------ |
+| POST   | `/verify-cbe`       | ✅   | CBE transaction by reference + suffix            |
+| POST   | `/verify-telebirr`  | ✅   | Telebirr receipt by reference                    |
+| POST   | `/verify-dashen`    | ✅   | Dashen bank transaction by reference             |
+| POST   | `/verify-abyssinia` | ✅   | Abyssinia bank transaction by reference + suffix |
+| POST   | `/verify-cbebirr`   | ✅   | CBE Birr transaction by receipt + phone          |
+| POST   | `/verify`           | ✅   | Smart universal verification router              |
+| POST   | `/verify-image`     | ✅   | Image upload for receipt OCR                     |
+| GET    | `/health`           | ❌   | Health check                                     |
+| GET    | `/`                 | ❌   | API metadata                                     |
+| GET    | `/admin/stats`      | 🔐   | API usage stats                                  |
+| GET    | `/admin/api-keys`   | 🔐   | List all API keys                                |
+| POST   | `/admin/api-keys`   | 🔐   | Generate API key                                 |
 
 ---
 

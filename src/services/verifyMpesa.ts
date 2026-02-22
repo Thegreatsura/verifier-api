@@ -37,7 +37,7 @@ export async function verifyMpesa(
                 'Accept': 'application/json, text/plain, */*',
                 'Referer': 'https://m-pesabusiness.safaricom.et/'
             },
-            timeout: 30000
+            timeout: 60000
         });
 
         const data = response.data;
