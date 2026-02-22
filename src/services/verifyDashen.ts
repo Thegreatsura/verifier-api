@@ -38,28 +38,50 @@ export async function verifyDashen(
 ): Promise<DashenVerifyResult> {
     const url = `https://receipt.dashensuperapp.com/receipt/${transactionReference}`;
     const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+    const maxRetries = 5;
+    const retryDelay = 2000; // 2 seconds
 
-    try {
-        logger.info(`🔎 Fetching Dashen receipt: ${url}`);
-        const response: AxiosResponse<ArrayBuffer> = await axios.get(url, {
-            httpsAgent,
-            responseType: 'arraybuffer',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Accept': 'application/pdf'
-            },
-            timeout: 30000
-        });
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            logger.info(`🔎 Fetching Dashen receipt (Attempt ${attempt}/${maxRetries}): ${url}`);
+            const response: AxiosResponse<ArrayBuffer> = await axios.get(url, {
+                httpsAgent,
+                responseType: 'arraybuffer',
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                    'Accept': 'application/pdf'
+                },
+                timeout: 60000
+            });
 
-        logger.info('✅ Dashen receipt fetch success, parsing PDF');
-        return await parseDashenReceipt(response.data);
-    } catch (error: any) {
-        logger.error('❌ Dashen receipt fetch failed:', error.message);
-        return {
-            success: false,
-            error: `Failed to fetch receipt: ${error.message}`
-        };
+            logger.info('✅ Dashen receipt fetch success, parsing PDF');
+            return await parseDashenReceipt(response.data);
+        } catch (error: any) {
+            const isLastAttempt = attempt === maxRetries;
+            const status = error.response?.status;
+            
+            logger.warn(`⚠️ Dashen receipt fetch failed (Attempt ${attempt}/${maxRetries}): ${error.message}`);
+
+            // If it's the last attempt, return failure
+            if (isLastAttempt) {
+                logger.error('❌ All retry attempts failed for Dashen receipt.');
+                return {
+                    success: false,
+                    error: `Failed to fetch receipt after ${maxRetries} attempts: ${error.message}`
+                };
+            }
+
+            // Wait before retrying
+            logger.info(`⏳ Waiting ${retryDelay}ms before retry...`);
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+        }
     }
+
+    // Should theoretically not reach here due to the return in loop
+    return {
+        success: false,
+        error: 'Unknown error in retry loop'
+    };
 }
 
 async function parseDashenReceipt(buffer: ArrayBuffer): Promise<DashenVerifyResult> {

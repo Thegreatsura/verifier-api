@@ -1,38 +1,56 @@
 import { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import logger from '../utils/logger';
 import { prisma } from '../utils/prisma';
 import { AppError, ErrorType, sendErrorResponse } from '../utils/errorHandler';
 
 // Function to generate a new API key
 export const generateApiKey = async (owner: string) => {
-  // Generate a random API key
-  const key = Buffer.from(`${owner}-${Date.now()}-${Math.random().toString(36).substring(2)}`)
-    .toString('base64')
-    .replace(/[^a-zA-Z0-9]/g, '');
+  // Generate a secure 24-byte random key
+  const rawSecret = crypto.randomBytes(24).toString('hex');
+  const rawKey = `sk_live_${rawSecret}`;
+
+  // Hash it for database storage
+  const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
+
+  // Create a prefix for the admin dashboard (e.g., sk_live_1a2b3c...)
+  const prefix = `sk_live_${rawSecret.substring(0, 6)}...`;
 
   try {
-    // Create API key in database
+    // Create API key in database (Notice we do NOT save the rawKey to the 'key' column)
     const apiKey = await prisma.apiKey.create({
       data: {
-        key,
+        keyHash,
+        prefix,
         owner,
         usageCount: 0,
-        isActive: true
+        isActive: true,
+        tier: 'FREE' // Defaults to free tier
       }
     });
 
-    return apiKey;
+    // Return BOTH the record and the raw key so the admin route can display it once
+    return { apiKeyRecord: apiKey, rawKey };
   } catch (error) {
     logger.error('Error generating API key:', error);
     throw error;
   }
 };
 
-// Function to validate an API key
-export const validateApiKey = async (key: string) => {
+// Function to validate an API key (Hybrid approach for old & new keys)
+export const validateApiKey = async (incomingKey: string) => {
   try {
-    return await prisma.apiKey.findUnique({
-      where: { key, isActive: true }
+    const incomingHash = crypto.createHash('sha256').update(incomingKey).digest('hex');
+
+    // We check for the new hashed key OR the legacy plain-text key
+    return await prisma.apiKey.findFirst({
+      where: {
+        isActive: true,
+        OR: [
+          { keyHash: incomingHash },
+          { key: incomingKey } // Keeps your 199 existing users working!
+        ]
+      }
     });
   } catch (error) {
     logger.error('Error validating API key:', error);
@@ -61,7 +79,8 @@ export const apiKeyAuth = async (req: Request, res: Response, next: NextFunction
     const keyData = await validateApiKey(keyString);
 
     if (!keyData) {
-      logger.warn(`Invalid API key used: ${typeof keyString === 'string' ? keyString.substring(0, 8) : ''}...`);
+      // Don't log the full invalid key for security
+      logger.warn(`Invalid API key attempt.`);
       return res.status(403).json({ success: false, error: 'Invalid API key' });
     }
 
@@ -80,14 +99,16 @@ export const apiKeyAuth = async (req: Request, res: Response, next: NextFunction
     next();
   } catch (error) {
     logger.error('Error validating API key:', error);
-    sendErrorResponse(res, error);
+    sendErrorResponse(res, error as AppError);
   }
 };
 
 // Get all API keys
 export const getApiKeys = async () => {
   try {
-    return await prisma.apiKey.findMany();
+    return await prisma.apiKey.findMany({
+      orderBy: { createdAt: 'desc' } // Good practice to show newest first
+    });
   } catch (error) {
     logger.error('Error fetching API keys:', error);
     throw error;

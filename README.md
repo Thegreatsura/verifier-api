@@ -1,6 +1,6 @@
 # 📄 Payment Verification API
 
-This API provides verification services for payment transactions made through **Commercial Bank of Ethiopia (CBE)**, **Telebirr**, **Dashen Bank**, **Bank of Abyssinia**, and **CBE Birr** mobile payment platforms in Ethiopia.  
+This API provides verification services for payment transactions made through **Commercial Bank of Ethiopia (CBE)**, **Telebirr**, **Dashen Bank**, **Bank of Abyssinia**, **CBE Birr**, and **M-Pesa** mobile payment platforms in Ethiopia.  
 It allows applications to verify the authenticity and details of payment receipts by reference numbers or uploaded images.
 
 > ⚠️ **Disclaimer**: This is **not an official API**. I am **not affiliated with Ethio Telecom, Telebirr, or Commercial Bank of Ethiopia (CBE)**. This tool is built for personal and developer utility purposes only and scrapes publicly available data.
@@ -8,6 +8,12 @@ It allows applications to verify the authenticity and details of payment receipt
 ---
 
 ## ✅ Features
+
+### 🚀 Universal Verification (Smart Router)
+
+- **One endpoint to rule them all:** Verifies transactions from multiple providers (CBE, Telebirr, Dashen, Bank of Abyssinia, CBE Birr) using a single, intelligent endpoint (`POST /verify`). *Note: M-Pesa is currently supported via its dedicated endpoint only.*
+- Automatically detects the provider based on the format of the provided `reference` number and accompanying JSON payload.
+- Strictly validates payloads and intelligently delegates to the correct backend service.
 
 ### 🔷 CBE Payment Verification
 
@@ -56,6 +62,12 @@ It allows applications to verify the authenticity and details of payment receipt
   - Account information
   - Payment amounts and dates
   - Verification status
+
+### 🔷 M-Pesa Payment Verification
+
+- Verifies M-Pesa mobile money transfers using receipt reference and phone number
+- Extracts transaction details from the generated receipt PDFs
+- Ethiopian phone number validation
 
 ### 🔷 CBE Birr Payment Verification
 
@@ -144,6 +156,33 @@ pnpm start
 ---
 
 ## 📡 API Endpoints
+
+### 🚀 Universal Verification (Smart Router)
+
+#### `POST /verify`
+
+Verify a payment from multiple providers using a single endpoint. The API automatically detects the provider based on the reference format and accompanying payload.
+
+**Requires API Key**
+
+**Request Body:**
+
+```json
+{
+  "reference": "REQUIRED_REFERENCE_STRING",
+  "suffix": "OPTIONAL_SUFFIX_FOR_CBE_OR_ABYSSINIA",
+  "phoneNumber": "OPTIONAL_PHONE_FOR_CBEBIRR"
+}
+```
+
+**Sorting Rules:**
+- **Dashen Bank**: `reference` must be 16 chars starting with 3 digits. No extra params.
+- **CBE**: `reference` must be 12 chars starting with `FT`. Requires 8-digit `suffix`.
+- **Bank of Abyssinia**: `reference` must be 12 chars starting with `FT`. Requires 5-digit `suffix`.
+- **CBE Birr**: `reference` must be 10 alphanumeric chars. Requires 10-12 digit `phoneNumber`.
+- **Telebirr**: `reference` must be 10 alphanumeric chars. No extra params.
+
+---
 
 ### ✅ CBE Verification
 
@@ -241,6 +280,27 @@ Verify a Bank of Abyssinia payment using a reference number and 5-digit suffix.
 
 ---
 
+### ✅ M-Pesa Verification
+
+#### `POST /verify-mpesa`
+
+Verify an M-Pesa payment using a receipt number (reference) and phone number.
+
+**Requires API Key**
+
+**Request Body:**
+
+```json
+{
+  "receiptNumber": "RECEIPT_REFERENCE",
+  "phoneNumber": "251912345678"
+}
+```
+
+**Note:** Phone number must be in Ethiopian format (251 + 9 digits).
+
+---
+
 ### ✅ CBE Birr Verification
 
 #### `POST /verify-cbebirr`
@@ -279,7 +339,18 @@ Multipart form-data with an image file.
 
 ---
 
+
+
 ## 🧪 Try It (Sample cURL Commands)
+
+### 🚀 Universal Smart Router
+
+```bash
+curl -X POST https://verifyapi.leulzenebe.pro/verify \
+  -H "x-api-key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "reference": "FT253089F68Z", "suffix": "16825193" }'
+```
 
 ### ✅ CBE
 
@@ -324,6 +395,15 @@ curl -X POST https://verifyapi.leulzenebe.pro/verify-cbebirr \
   -H "x-api-key: YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "receiptNumber": "RECEIPT_NUMBER", "phoneNumber": "251912345678" }'
+```
+
+### ✅ M-Pesa
+
+```bash
+curl -X POST https://verifyapi.leulzenebe.pro/verify-mpesa \
+  -H "x-api-key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "receiptNumber": "RECEIPT_REFERENCE", "phoneNumber": "251912345678" }'
 ```
 
 ### ✅ Image
@@ -469,6 +549,7 @@ LOG_LEVEL=debug
 | POST   | `/verify-dashen`      | ✅    | Dashen bank transaction by reference |
 | POST   | `/verify-abyssinia`   | ✅    | Abyssinia bank transaction by reference + suffix |
 | POST   | `/verify-cbebirr`     | ✅    | CBE Birr transaction by receipt + phone |
+| POST   | `/verify`             | ✅    | Smart universal verification router |
 | POST   | `/verify-image`       | ✅    | Image upload for receipt OCR        |
 | GET    | `/health`             | ❌    | Health check                        |
 | GET    | `/`                   | ❌    | API metadata                        |

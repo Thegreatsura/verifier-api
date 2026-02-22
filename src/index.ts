@@ -10,6 +10,8 @@ import telebirrRouter from './routes/verifyTelebirrRoute';
 import dashenRouter from './routes/verifyDashenRoute';
 import abyssiniaRouter from './routes/verifyAbyssiniaRoute';
 import cbebirrRouter from './routes/verifyCBEBirrRoute';
+import mpesaRouter from './routes/verifyMpesaRoute';
+import universalRouter from './routes/verifyUniversalRoute';
 import adminRouter from './routes/adminRoute';
 import logger from './utils/logger';
 import { verifyImageHandler } from "./services/verifyImage";
@@ -35,8 +37,7 @@ logger.info(`Platform: ${process.platform}`);
         // Initialize stats cache from database
         await initializeStatsCache();
     } catch (error) {
-        logger.error('Failed to initialize database connection:', error);
-        process.exit(1);
+        logger.error('Failed to initialize database connection or stats cache. Starting server anyway...', error);
     }
 })();
 
@@ -70,7 +71,10 @@ app.use('/verify-telebirr', telebirrRouter);
 app.use('/verify-dashen', dashenRouter);
 app.use('/verify-abyssinia', abyssiniaRouter);
 app.use('/verify-cbebirr', cbebirrRouter);
+app.use('/verify-mpesa', mpesaRouter);
 app.post('/verify-image', verifyImageHandler);
+app.use('/verify', universalRouter);
+
 
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {
@@ -88,6 +92,8 @@ app.get('/', (req: Request, res: Response) => {
             '/verify-dashen',
             '/verify-abyssinia',
             '/verify-cbebirr',
+            '/verify-mpesa',
+            '/verify',
             '/verify-image'
         ]
     });

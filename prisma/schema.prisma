@@ -50,7 +50,8 @@ model User {
   accounts      Account[]
   sessions      Session[]
   ApiKey        ApiKey[]
-  role          Role          @default(USER)
+  role          Role      @default(USER)
+  createdAt     DateTime  @default(now())
 }
 
 enum Role {
@@ -66,9 +67,19 @@ model VerificationToken {
   @@unique([identifier, token])
 }
 
+enum ApiTier {
+  FREE
+  PAID
+}
+
 model ApiKey {
   id         String     @id @default(uuid())
-  key        String     @unique
+  key        String?     @unique
+
+  keyHash    String?    @unique 
+  prefix     String?    
+  tier       ApiTier    @default(FREE)
+  
   owner      String
   createdAt  DateTime   @default(now())
   lastUsed   DateTime?

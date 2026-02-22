@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [3.0.0] - 2026-02-22
+
+### 🚀 Added
+- **Universal Verification Endpoint (`POST /verify`)**: A smart router that dynamically detects the payment provider (CBE, Telebirr, Dashen, Bank of Abyssinia, CBE Birr) based on the reference number structure and payload, simplifying client integrations.
+
+### ♻️ Changed
+- Promoted Universal Router `POST /verify` endpoint as the highlighted/recommended method in primary documentation.
+
+---
+
+## [2.1.1] - 2026-02-21
+
+### 🚀 Added
+- Add new M-Pesa verification endpoint with API integration and PDF parsing.
+- Update Postman collection to include M-Pesa endpoints.
+
+### 💾 Database Schema Updates (Important)
+- Added `keyHash`, `prefix`, `tier`, and `userId` relational mapping to the `ApiKey` model for enhanced security and identity management.
+- Added `createdAt` tracking to the `User` model.
+- **Note for contributors:** Because of these schema changes, anyone cloning or pulling the repository must run `pnpm prisma db push` (or `npx prisma db push`) to synchronize their local database.
+
+### 🐛 Fixed & improved
+- Increase timeout for Telebirr verification to handle proxy retry logic.
+- Implement retry mechanism for Dashen receipt fetching with 5 attempts.
+- Update CBE Birr PDF parsing to handle actual document structure.
+- Increase wait time for CBE PDF detection from 3s to 6s.
+- Resolved a bug where the `verifyCBEBirr` service would fail implicitly if an API key was not explicitly provided through the inner service layer.
+- Fixed an issue causing unhandled promise rejections to crash the development server silently during Prisma initialization on Windows.
+- Fixed Express route precedence order to prevent the new `/verify` route from swallowing explicit `/verify-*` prefix calls (e.g. `/verify-image`).
+
+---
+
 ## [2.1.0] - 2025-11-13
 
 ### Added

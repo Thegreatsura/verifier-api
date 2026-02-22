@@ -20,7 +20,6 @@ const checkAdminAuth = (req: Request, res: Response, next: NextFunction) => {
 };
 
 // Generate a new API key
-// Update the API key generation route
 router.post('/api-keys', checkAdminAuth as RequestHandler, async (req: Request, res: Response): Promise<void> => {
     const { owner } = req.body;
 
@@ -30,15 +29,18 @@ router.post('/api-keys', checkAdminAuth as RequestHandler, async (req: Request, 
     }
 
     try {
-        const apiKey = await generateApiKey(owner);
+        const { apiKeyRecord, rawKey } = await generateApiKey(owner);
         logger.info(`New API key generated for ${owner}`);
 
         res.status(201).json({
             success: true,
+            message: "IMPORTANT: Copy this key now. You will not be able to view it again.",
             data: {
-                key: apiKey.key,
-                owner: apiKey.owner,
-                createdAt: apiKey.createdAt
+                key: rawKey, // This is the ONLY time the user sees the real key
+                prefix: apiKeyRecord.prefix,
+                owner: apiKeyRecord.owner,
+                tier: apiKeyRecord.tier,
+                createdAt: apiKeyRecord.createdAt
             }
         });
     } catch (err) {
@@ -51,20 +53,18 @@ router.post('/api-keys', checkAdminAuth as RequestHandler, async (req: Request, 
 router.get('/api-keys', checkAdminAuth as RequestHandler, async (req: Request, res: Response) => {
     try {
         const apiKeys = await getApiKeys();
-        const keyList = apiKeys.map((key: {
-            key: string;
-            owner: string;
-            createdAt: Date;
-            lastUsed: Date | null;
-            usageCount: number;
-            isActive: boolean;
-        }) => ({
-            key: key.key.substring(0, 8) + '...',
-            owner: key.owner,
-            createdAt: key.createdAt,
-            lastUsed: key.lastUsed,
-            usageCount: key.usageCount,
-            isActive: key.isActive
+
+        // Map over keys safely, supporting both new hashed keys and old legacy keys
+        const keyList = apiKeys.map((k) => ({
+            id: k.id,
+            // Use the new prefix, OR fallback to substringing the old key for legacy users
+            key: k.prefix || (k.key ? `${k.key.substring(0, 8)}...` : 'Unknown'),
+            owner: k.owner,
+            tier: k.tier || 'FREE',
+            createdAt: k.createdAt,
+            lastUsed: k.lastUsed,
+            usageCount: k.usageCount,
+            isActive: k.isActive
         }));
 
         res.json({ success: true, data: keyList });

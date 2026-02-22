@@ -73,7 +73,7 @@ export async function verifyCBE(
             });
 
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-            await new Promise(res => setTimeout(res, 3000));
+            await new Promise(res => setTimeout(res, 6000));
             await browser.close();
 
             if (!detectedPdfUrl) {
