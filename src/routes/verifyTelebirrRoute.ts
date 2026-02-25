@@ -25,8 +25,18 @@ router.post<{}, {}, VerifyTelebirrRequestBody>(
                 return;
             }
             res.json({ success: true, data: result });
-        } catch (err) {
+        } catch (err: any) {
             logger.error('Telebirr verification error:', err);
+
+            if (err.name === 'TelebirrVerificationError') {
+                res.status(502).json({
+                    success: false,
+                    error: err.message,
+                    details: err.details
+                });
+                return;
+            }
+
             res.status(500).json({ 
                 success: false, 
                 error: 'Server error verifying Telebirr receipt.',

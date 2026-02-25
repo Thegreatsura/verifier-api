@@ -4,12 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [3.0.1] - 2026-02-25
+
+### 🚀 Improved
+
+- **Telebirr Proxy Upgrades**: The core `fetchFromProxySource` logic now properly traps `ETIMEDOUT` / `ECONNABORTED` and translates them into an HTTP 502 with contextual error messages down to the API client, instead of surfacing a generic 404 or hanging silently.
+- **Upgraded PHP Proxy (`verify.php`)**: Rewrote the fallback Ethiotelecom request engine from `file_get_contents` to `cURL`. Now explicit SSL Certificate errors and connection timeouts from Ethiotelecom are properly trapped and returned as JSON to the node backend, and then to the user.
+- **Secured PHP Proxy**: added a `key` parameter requirement to `verify.php`, mimicking the M-Pesa implementation to stop unauthorized public access.
+
+---
+
 ## [3.0.0] - 2026-02-22
 
 ### 🚀 Added
+
 - **Universal Verification Endpoint (`POST /verify`)**: A smart router that dynamically detects the payment provider (CBE, Telebirr, Dashen, Bank of Abyssinia, CBE Birr) based on the reference number structure and payload, simplifying client integrations.
 
 ### ♻️ Changed
+
 - Promoted Universal Router `POST /verify` endpoint as the highlighted/recommended method in primary documentation.
 
 ---
@@ -17,15 +29,18 @@ All notable changes to this project will be documented in this file.
 ## [2.1.1] - 2026-02-21
 
 ### 🚀 Added
+
 - Add new M-Pesa verification endpoint with API integration and PDF parsing.
 - Update Postman collection to include M-Pesa endpoints.
 
 ### 💾 Database Schema Updates (Important)
+
 - Added `keyHash`, `prefix`, `tier`, and `userId` relational mapping to the `ApiKey` model for enhanced security and identity management.
 - Added `createdAt` tracking to the `User` model.
 - **Note for contributors:** Because of these schema changes, anyone cloning or pulling the repository must run `pnpm prisma db push` (or `npx prisma db push`) to synchronize their local database.
 
 ### 🐛 Fixed & improved
+
 - Increase timeout for Telebirr verification to handle proxy retry logic.
 - Implement retry mechanism for Dashen receipt fetching with 5 attempts.
 - Update CBE Birr PDF parsing to handle actual document structure.
@@ -39,9 +54,11 @@ All notable changes to this project will be documented in this file.
 ## [2.1.0] - 2025-11-13
 
 ### Added
+
 - Telebirr: Return `bankName` in receipt payloads.
 
 ### Changed
+
 - Bump API version to `2.1.0` in package.json, root endpoint, README, Postman collection.
 
 ## [1.1.0] - 2025-05-18

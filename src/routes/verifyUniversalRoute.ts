@@ -122,8 +122,18 @@ router.post('/', async (req: Request<{}, {}, UniversalVerifyBody>, res: Response
         res.status(400).json({ success: false, error: 'The provided reference does not match any recognized provider format for automatic sorting.' });
         return;
 
-    } catch (err) {
+    } catch (err: any) {
         logger.error("💥 Universal verification failed:", err);
+
+        if (err.name === 'TelebirrVerificationError') {
+            res.status(502).json({
+                success: false,
+                error: err.message,
+                details: err.details
+            });
+            return;
+        }
+
         res.status(500).json({
             success: false,
             error: 'Server error verifying payment through the universal endpoint.',

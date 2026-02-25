@@ -86,16 +86,16 @@ It allows applications to verify the authenticity and details of payment receipt
 
 ---
 
-## 🌐 Hosting Limitations for `verify-telebirr`
+## 🌐 Hosting Limitations for `verify-telebirr` and `verify-mpesa`
 
-Due to **regional restrictions** by the Telebirr system, hosting the `verify-telebirr` endpoint outside of Ethiopia (e.g., on a VPS like Hetzner or AWS) may result in failed receipt verification. Specifically:
+Due to **regional restrictions** by the Telebirr system and Safaricom M-Pesa, hosting these endpoints outside of Ethiopia/Kenya (e.g., on a foreign VPS like Hetzner or AWS) may result in failed receipt verification. Specifically:
 
 - Telebirr’s receipt pages (`https://transactioninfo.ethiotelecom.et/receipt/[REFERENCE]`) often **block or timeout** requests made from foreign IP addresses.
-- This results in errors such as `ERR_FAILED`, `403`, or DNS resolution failures.
+- Safaricom's M-Pesa API (`https://m-pesabusiness.safaricom.et/api/receipt/getReceipt`) strictly blocks connections from foreign data centers, resulting in `504 Gateway Timeout` or `500 Internal Server Errors`.
 
 ### ❌ Affected:
 
-- VPS or cloud servers located outside Ethiopia
+- VPS or cloud servers located outside Ethiopia/Kenya
 
 ### ✅ Works Best On:
 
@@ -104,9 +104,10 @@ Due to **regional restrictions** by the Telebirr system, hosting the `verify-tel
 
 #### 🛠 Proxy Support:
 
-This project includes a secondary Telebirr verification relay hosted inside Ethiopia. When the primary `verify-telebirr` fetch fails on your foreign VPS, the server can **fallback to our proxy** to complete the verification.
+This project supports secondary fallback verification relays hosted inside Ethiopia. When the primary `verify-telebirr` or `verify-mpesa` fetch fails on your foreign VPS, the server can **fallback to our proxy** to complete the verification.
+A standalone `mpesa.php` file is included in the `.github` / repository root which can be easily hosted on any cheap generic cPanel host inside Ethiopia to act as your own private proxy.
 
-For best results and full control, clone the repository and **self-host from inside Ethiopia**.
+For best results and full control, clone the repository and **self-host the main Node.js application from inside Ethiopia**.
 
 ---
 

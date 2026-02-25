@@ -92,9 +92,13 @@ Return this JSON format exactly:
                             reference: result.transaction_number,
                             details: data,
                         });
-                    } catch (verifyErr) {
+                    } catch (verifyErr: any) {
                         logger.error("Telebirr verification failed", { verifyErr });
-                        res.status(500).json({ error: "Verification failed for Telebirr" });
+                        if (verifyErr.name === 'TelebirrVerificationError') {
+                            res.status(502).json({ error: verifyErr.message, details: verifyErr.details });
+                        } else {
+                            res.status(500).json({ error: "Verification failed for Telebirr" });
+                        }
                     }
                 } else {
                     res.json({

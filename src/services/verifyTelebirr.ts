@@ -362,6 +362,15 @@ async function fetchFromPrimarySource(reference: string, baseUrl: string): Promi
     }
 }
 
+export class TelebirrVerificationError extends Error {
+    public details?: string;
+    constructor(message: string, details?: string) {
+        super(message);
+        this.name = 'TelebirrVerificationError';
+        this.details = details;
+    }
+}
+
 /**
  * Fetches and processes Telebirr receipt data from the fallback proxy (JSON)
  * @param reference The Telebirr reference number
@@ -390,15 +399,18 @@ async function fetchFromProxySource(reference: string, proxyUrl: string): Promis
                 data = JSON.parse(data);
             } catch (e) {
                 logger.warn("Proxy response is not valid JSON, attempting to scrape as HTML");
-                // If it's not JSON, try to scrape it as HTML
                 return scrapeTelebirrReceipt(response.data);
             }
+        }
+        
+        if (data && data.success === false && data.error) {
+            logger.error(`Proxy returned explicit error: ${data.error}`);
+            throw new TelebirrVerificationError(data.error, data.details);
         }
 
         const extractedData = parseTelebirrJson(data);
         if (!extractedData) {
             logger.warn("Failed to parse JSON from proxy, attempting to scrape as HTML");
-            // If JSON parsing fails, try to scrape it as HTML
             return scrapeTelebirrReceipt(response.data);
         }
 
@@ -411,10 +423,19 @@ async function fetchFromProxySource(reference: string, proxyUrl: string): Promis
 
         return extractedData;
     } catch (error) {
+        if (error instanceof Error && error.name === 'TelebirrVerificationError') {
+            throw error; // Bubble up explicit errors
+        }
+
+        const axiosError = error as AxiosError;
+        if (axiosError.code === 'ETIMEDOUT' || axiosError.code === 'ECONNABORTED' || axiosError.code === 'ECONNREFUSED') {
+            const detailMsg = axiosError.message;
+            throw new TelebirrVerificationError("The fallback proxy server (leul.et) is unreachable or timed out.", detailMsg);
+        }
+
         const errorMessage = error instanceof Error ? error.message : "Unknown error";
         const errorStack = error instanceof Error ? error.stack : undefined;
 
-        const axiosError = error as AxiosError;
         const responseDetails = axiosError.response ? {
             status: axiosError.response.status,
             statusText: axiosError.response.statusText,

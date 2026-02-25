@@ -25,13 +25,14 @@ function titleCase(str: string): string {
 export async function verifyMpesa(
     transactionId: string
 ): Promise<MpesaVerifyResult> {
-    const url = `https://m-pesabusiness.safaricom.et/api/receipt/getReceipt?trxNo=${transactionId}`;
-    const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+    const primaryUrl = `https://m-pesabusiness.safaricom.et/api/receipt/getReceipt?trxNo=${transactionId}`;
+    const proxyKey = process.env.MPESA_PROXY_KEY || '';
+    const fallbackUrl = `https://leul.et/mpesa.php?reference=${transactionId}&key=${proxyKey}`;
+    const skipPrimary = process.env.SKIP_PRIMARY_VERIFICATION === "true";
 
-    try {
-        logger.info(`🔎 Fetching receipt data from API: ${url}`);
+    async function fetchFromUrl(url: string, source: string): Promise<any> {
+        logger.info(`🔎 Fetching receipt data from ${source}: ${url}`);
         const response = await axios.get(url, {
-            httpsAgent,
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
                 'Accept': 'application/json, text/plain, */*',
@@ -39,8 +40,38 @@ export async function verifyMpesa(
             },
             timeout: 60000
         });
+        return response.data;
+    }
 
-        const data = response.data;
+    try {
+        let data: any = null;
+
+        if (!skipPrimary) {
+            try {
+                data = await fetchFromUrl(primaryUrl, "primary API");
+            } catch (err: any) {
+                logger.warn(`⚠️ Primary M-Pesa fetch failed: ${err.message}. Trying fallback proxy...`);
+            }
+        } else {
+            logger.info(`⏭️ Skipping primary verifier due to SKIP_PRIMARY_VERIFICATION=true`);
+        }
+
+        // Try proxy if primary failed, skipped or returned a bad responseCode
+        if (!data || data.responseCode !== "0" || !data.base64Data) {
+            try {
+                data = await fetchFromUrl(fallbackUrl, "fallback proxy");
+            } catch (err: any) {
+                logger.error(`❌ M-Pesa fallback proxy request failed: ${err.message}`);
+            }
+        }
+
+        if (!data) {
+             return {
+                success: false,
+                error: `Failed to fetch M-Pesa receipt from both primary and fallback sources.`
+            };
+        }
+
         logger.info(`📡 API Response Code: ${data.responseCode}, Description: ${data.responseDescription}`);
 
         if (data.responseCode === "0" && data.base64Data) {
@@ -58,7 +89,7 @@ export async function verifyMpesa(
                 };
             }
         } else {
-            logger.warn(`⚠️ API returned unsuccessful code or missing data: ${JSON.stringify(data)}`);
+            logger.warn(`⚠️ M-Pesa returned unsuccessful code or missing data: ${JSON.stringify(data)}`);
             return {
                 success: false,
                 error: `API Error: ${data.responseDescription || 'Unknown error'}`
@@ -66,7 +97,7 @@ export async function verifyMpesa(
         }
 
     } catch (error: any) {
-        logger.error(`❌ M-Pesa API request failed: ${error.message}`);
+        logger.error(`❌ M-Pesa verification failed: ${error.message}`);
         return {
             success: false,
             error: `Request failed: ${error.message}`
