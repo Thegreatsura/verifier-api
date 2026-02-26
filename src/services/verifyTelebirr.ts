@@ -324,7 +324,7 @@ async function fetchFromPrimarySource(reference: string, baseUrl: string): Promi
 
     try {
         logger.info(`Attempting to fetch Telebirr receipt from primary source: ${url}`);
-        const response = await axios.get(url, { timeout: 60000 }); // 60 second timeout to be safe
+        const response = await axios.get(url, { timeout: 30000 }); // 30 second timeout to be safe
         logger.debug(`Received response with status: ${response.status}`);
 
         const extractedData = scrapeTelebirrReceipt(response.data);
@@ -383,7 +383,7 @@ async function fetchFromProxySource(reference: string, proxyUrl: string): Promis
     try {
         logger.info(`Attempting to fetch Telebirr receipt from proxy: ${url}`);
         const response = await axios.get(url, {
-            timeout: 60000, // Increased to 60s to handle PHP retry logic (12s + 12s + overhead)
+            timeout: 30000,
             headers: {
                 'Accept': 'application/json',
                 'User-Agent': 'VerifierAPI/1.0'
@@ -402,7 +402,7 @@ async function fetchFromProxySource(reference: string, proxyUrl: string): Promis
                 return scrapeTelebirrReceipt(response.data);
             }
         }
-        
+
         if (data && data.success === false && data.error) {
             logger.error(`Proxy returned explicit error: ${data.error}`);
             throw new TelebirrVerificationError(data.error, data.details);
@@ -424,7 +424,7 @@ async function fetchFromProxySource(reference: string, proxyUrl: string): Promis
         return extractedData;
     } catch (error) {
         if (error instanceof Error && error.name === 'TelebirrVerificationError') {
-            throw error; // Bubble up explicit errors
+            throw error;
         }
 
         const axiosError = error as AxiosError;
@@ -454,25 +454,46 @@ async function fetchFromProxySource(reference: string, proxyUrl: string): Promis
 
 export async function verifyTelebirr(reference: string): Promise<TelebirrReceipt | null> {
     const primaryUrl = "https://transactioninfo.ethiotelecom.et/receipt/";
-    const fallbackUrl = "https://leul.et/verify.php?reference=";
 
+
+    const envProxies = process.env.FALLBACK_PROXIES || "";
+    const fallbackProxies = envProxies.split(',')
+        .map(url => url.trim())
+        .filter(url => url.length > 0);
     const skipPrimary = process.env.SKIP_PRIMARY_VERIFICATION === "true";
 
     if (!skipPrimary) {
+        logger.info(`Attempting primary verification for: ${reference}`);
         const primaryResult = await fetchFromPrimarySource(reference, primaryUrl);
-        if (primaryResult && isValidReceipt(primaryResult)) return primaryResult;
-        logger.warn(`Primary Telebirr verification failed for reference: ${reference}. Trying fallback proxy...`);
+
+        if (primaryResult && isValidReceipt(primaryResult)) {
+            return primaryResult;
+        }
+        logger.warn(`Primary verification failed. Moving to fallback proxy pool...`);
     } else {
-        logger.info(`Skipping primary verifier due to SKIP_PRIMARY_VERIFICATION=true`);
+        logger.info(`Skipping primary verifier (SKIP_PRIMARY_VERIFICATION=true).`);
     }
 
-    const fallbackResult = await fetchFromProxySource(reference, fallbackUrl);
-    if (fallbackResult && isValidReceipt(fallbackResult)) {
-        logger.info(`Successfully verified Telebirr receipt using fallback proxy for reference: ${reference}`);
-        return fallbackResult;
+    if (fallbackProxies.length === 0 && skipPrimary) {
+        logger.error("CRITICAL: Primary check skipped, but no FALLBACK_PROXIES defined in .env!");
+        return null;
     }
 
-    logger.error(`Both primary and fallback Telebirr verification failed for reference: ${reference}`);
+    for (const proxyUrl of fallbackProxies) {
+        try {
+            logger.info(`Attempting verification with proxy: ${proxyUrl}`);
+            const fallbackResult = await fetchFromProxySource(reference, proxyUrl);
+
+            if (fallbackResult && isValidReceipt(fallbackResult)) {
+                logger.info(`Successfully verified using proxy: ${proxyUrl}`);
+                return fallbackResult;
+            }
+        } catch (error) {
+            logger.warn(`Proxy ${proxyUrl} failed or timed out. Trying next...`);
+        }
+    }
+
+    logger.error(`All primary and proxy verification methods failed for reference: ${reference}`);
     return null;
 }
 
