@@ -378,7 +378,8 @@ export class TelebirrVerificationError extends Error {
  * @returns The parsed receipt data or null if failed
  */
 async function fetchFromProxySource(reference: string, proxyUrl: string): Promise<TelebirrReceipt | null> {
-    const url = `${proxyUrl}${reference}`;
+    const proxyKey = process.env.TELEBIRR_PROXY_KEY || '';
+    const url = `${proxyUrl}${reference}${proxyKey ? `&key=${proxyKey}` : ''}`;
 
     try {
         logger.info(`Attempting to fetch Telebirr receipt from proxy: ${url}`);
