@@ -89,34 +89,34 @@ export async function verifyAbyssinia(reference: string, suffix: string): Promis
         logger.debug(`🔄 Starting field mapping process...`);
         
         // Extract and parse the amount
-        const transferredAmountStr = transactionData['Transferred Amount'] || '';
+        const transferredAmountStr = transactionData['Transferred Amount'] || transactionData['Total Amount including VAT'] || '';
         const amount = transferredAmountStr ? parseFloat(transferredAmountStr.replace(/[^\d.]/g, '')) : undefined;
         
-        // Parse the date
         const transactionDateStr = transactionData['Transaction Date'] || '';
         const date = transactionDateStr ? new Date(transactionDateStr) : undefined;
         
         const result: VerifyResult = {
             success: true,
-            payer: transactionData["Payer's Name"] || undefined,
-            payerAccount: transactionData['Source Account'] || undefined,
-            receiver: transactionData['Source Account Name'] || undefined, // This might be the receiver in Abyssinia context
-            receiverAccount: undefined, // Not available in Abyssinia data
-            amount: amount,
-            date: date,
-            reference: transactionData['Transaction Reference'] || undefined,
-            reason: transactionData['Narrative'] || null
+            payer: transactionData["Payer's Name"] || transactionData['Source Account Name'] || undefined,
+            payerAccount: transactionData['Source Account'] || transactionData["Payer's Account"] || undefined,
+            receiver: transactionData["Receiver's Name"] || transactionData['Beneficiary Name'] || undefined,
+            receiverAccount: transactionData["Receiver's Account"] || transactionData['Beneficiary Account'] || undefined,
+            amount,
+            date,
+            reference: transactionData['Transaction Reference'] || transactionData['Payment Reference'] || undefined,
+            reason: transactionData['Narrative'] || transactionData['Transaction Type'] || null
         };
         
         // Debug log each field mapping
         logger.debug(`🏷️  Field mappings:`);
-        logger.debug(`   payer: "${transactionData["Payer's Name"]}" -> "${result.payer}"`);
-        logger.debug(`   payerAccount: "${transactionData['Source Account']}" -> "${result.payerAccount}"`);
-        logger.debug(`   receiver: "${transactionData['Source Account Name']}" -> "${result.receiver}"`);
-        logger.debug(`   amount: "${transactionData['Transferred Amount']}" -> ${result.amount}`);
+        logger.debug(`   payer: "${transactionData["Payer's Name"] || transactionData['Source Account Name']}" -> "${result.payer}"`);
+        logger.debug(`   payerAccount: "${transactionData['Source Account'] || transactionData["Payer's Account"]}" -> "${result.payerAccount}"`);
+        logger.debug(`   receiver: "${transactionData["Receiver's Name"] || transactionData['Beneficiary Name']}" -> "${result.receiver}"`);
+        logger.debug(`   receiverAccount: "${transactionData["Receiver's Account"] || transactionData['Beneficiary Account']}" -> "${result.receiverAccount}"`);
+        logger.debug(`   amount: "${transactionData['Transferred Amount'] || transactionData['Total Amount including VAT']}" -> ${result.amount}`);
         logger.debug(`   date: "${transactionData['Transaction Date']}" -> ${result.date}`);
-        logger.debug(`   reference: "${transactionData['Transaction Reference']}" -> "${result.reference}"`);
-        logger.debug(`   reason: "${transactionData['Narrative']}" -> "${result.reason}"`);
+        logger.debug(`   reference: "${transactionData['Transaction Reference'] || transactionData['Payment Reference']}" -> "${result.reference}"`);
+        logger.debug(`   reason: "${transactionData['Narrative'] || transactionData['Transaction Type']}" -> "${result.reason}"`);
         
         logger.debug(`✅ Field mapping completed. Mapped ${Object.keys(result).length} fields.`);
         
@@ -125,7 +125,7 @@ export async function verifyAbyssinia(reference: string, suffix: string): Promis
         logger.debug(`💰 Key transaction details - Amount: ${result.amount}, Payer: ${result.payer}, Date: ${result.date}`);
         
         // Validate that we have essential fields
-        if (!result.reference || !result.amount || !result.payer) {
+        if (!result.reference || !result.amount) {
             logger.error('❌ Missing essential fields in transaction data');
             return { success: false, error: 'Missing essential fields in transaction data' };
         }
