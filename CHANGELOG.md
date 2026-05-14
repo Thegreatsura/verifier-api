@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [3.0.2] - 2026-05-14
+
+### 🚀 Added
+
+- **Telebirr**: Added `customerNote` extraction support in both the primary Node.js service and the PHP proxy script.
+
+### 🐛 Fixed & improved
+
+- **Telebirr Parsing**: Fixed regex issues that caused parsing failures for transaction amounts over 1000 Birr (containing commas) and transactions with single-decimal `0.0 Birr` service fees.
+- **PHP Proxy (`verify.php`)**: Improved regex and XPath matching logic to accurately parse complex HTML structures and handle varying number formats, aligning its behavior with the primary Node.js parser.
+
+---
+
 ## [3.0.1] - 2026-02-25
 
 ### 🚀 Improved

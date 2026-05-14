@@ -15,6 +15,7 @@ export interface TelebirrReceipt {
     serviceFeeVAT: string;
     totalPaidAmount: string;
     bankName: string;
+    customerNote: string;
 }
 
 /**
@@ -24,22 +25,22 @@ export interface TelebirrReceipt {
  */
 function extractSettledAmountRegex(htmlContent: string): string | null {
     // Pattern 1: Direct match with the exact text structure
-    const pattern1 = /የተከፈለው\s+መጠን\/Settled\s+Amount.*?<\/td>\s*<td[^>]*>\s*(\d+(?:\.\d{2})?\s+Birr)/is;
+    const pattern1 = /የተከፈለው\s+መጠን\/Settled\s+Amount.*?<\/td>\s*<td[^>]*>\s*([\d,]+(?:\.\d+)?\s+Birr)/is;
     let match = htmlContent.match(pattern1);
     if (match) return match[1].trim();
 
     // Pattern 2: Look for the table row structure
-    const pattern2 = /<tr[^>]*>.*?የተከፈለው\s+መጠን\/Settled\s+Amount.*?<td[^>]*>\s*(\d+(?:\.\d{2})?\s+Birr)/is;
+    const pattern2 = /<tr[^>]*>.*?የተከፈለው\s+መጠን\/Settled\s+Amount.*?<td[^>]*>\s*([\d,]+(?:\.\d+)?\s+Birr)/is;
     match = htmlContent.match(pattern2);
     if (match) return match[1].trim();
 
     // Pattern 3: More flexible approach - look for any cell containing "Settled Amount" followed by amount
-    const pattern3 = /Settled\s+Amount.*?(\d+(?:\.\d{2})?\s+Birr)/is;
+    const pattern3 = /Settled\s+Amount.*?([\d,]+(?:\.\d+)?\s+Birr)/is;
     match = htmlContent.match(pattern3);
     if (match) return match[1].trim();
 
     // Pattern 4: Look specifically in the transaction details table
-    const pattern4 = /የክፍያ\s+ዝርዝር\/Transaction\s+details.*?<tr[^>]*>.*?<td[^>]*>\s*[^<]*<\/td>\s*<td[^>]*>\s*[^<]*<\/td>\s*<td[^>]*>\s*(\d+(?:\.\d{2})?\s+Birr)/is;
+    const pattern4 = /የክፍያ\s+ዝርዝር\/Transaction\s+details.*?<tr[^>]*>.*?<td[^>]*>\s*[^<]*<\/td>\s*<td[^>]*>\s*[^<]*<\/td>\s*<td[^>]*>\s*([\d,]+(?:\.\d+)?\s+Birr)/is;
     match = htmlContent.match(pattern4);
     if (match) return match[1].trim();
 
@@ -54,7 +55,7 @@ function extractSettledAmountRegex(htmlContent: string): string | null {
 function extractServiceFeeRegex(htmlContent: string): string | null {
     // Pattern to match "የአገልግሎት ክፍያ/Service fee" followed by amount in Birr
     // Make sure we don't match VAT version
-    const pattern = /የአገልግሎት\s+ክፍያ\/Service\s+fee(?!\s+ተ\.እ\.ታ).*?<\/td>\s*<td[^>]*>\s*(\d+(?:\.\d{2})?\s+Birr)/i;
+    const pattern = /የአገልግሎት\s+ክፍያ\/Service\s+fee(?!\s+ተ\.እ\.ታ).*?<\/td>\s*<td[^>]*>\s*([\d,]+(?:\.\d+)?\s+Birr)/i;
     const match = htmlContent.match(pattern);
     if (match) return match[1].trim();
 
@@ -274,7 +275,8 @@ function scrapeTelebirrReceipt(html: string): TelebirrReceipt {
         serviceFee: getServiceFee(),
         serviceFeeVAT: getTextWithFallback("የአገልግሎት ክፍያ ተ.እ.ታ/Service fee VAT"),
         totalPaidAmount: getTextWithFallback("ጠቅላላ የተከፈለ/Total Paid Amount"),
-        bankName
+        bankName,
+        customerNote: getTextWithFallback("የደንበኛ መልዕክት/Customer Note")
     };
 }
 
@@ -305,7 +307,8 @@ function parseTelebirrJson(jsonData: any): TelebirrReceipt | null {
             serviceFee: data.serviceFee || "",
             serviceFeeVAT: data.serviceFeeVAT || "",
             totalPaidAmount: data.totalPaidAmount || "",
-            bankName: data.bankName || ""
+            bankName: data.bankName || "",
+            customerNote: data.customerNote || ""
         };
     } catch (error) {
         logger.error("Error parsing JSON from proxy endpoint", { error, jsonData });

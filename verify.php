@@ -142,10 +142,19 @@ function extractWithRegex($html, $labelPattern, $valuePattern = null) {
         $valuePattern = '([^<]+)';
     }
     
-    $pattern = '/' . preg_quote($labelPattern, '/') . '.*?<\/td>\s*<td[^>]*>\s*' . $valuePattern . '/i';
-    if (preg_match($pattern, $html, $matches)) {
+    // First try standard td sibling approach
+    $pattern1 = '/' . preg_quote($labelPattern, '/') . '.*?<\/td>\s*<td[^>]*>\s*' . $valuePattern . '/is';
+    if (preg_match($pattern1, $html, $matches)) {
         return trim(strip_tags($matches[1]));
     }
+    
+    // Fallback: look for the label and grab the NEXT text block that's not empty, regardless of HTML structure
+    // This handles cases where the structure might be tr > td > div, etc.
+    $pattern2 = '/' . preg_quote($labelPattern, '/') . '.*?<\/(?:td|div|span|p)>[^>]*>(?:<[^>]+>)*\s*' . $valuePattern . '/is';
+    if (preg_match($pattern2, $html, $matches)) {
+        return trim(strip_tags($matches[1]));
+    }
+    
     return "";
 }
 
@@ -174,14 +183,39 @@ $dom->loadHTML($html);
 $xpath = new DOMXPath($dom);
 
 function getNextCellText($xpath, $label) {
-    $nodeList = $xpath->query("//td[contains(text(), '$label')]");
-    if ($nodeList->length > 0) {
-        $cell = $nodeList->item(0);
-        $next = $cell->nextSibling;
-        while ($next && $next->nodeType !== XML_ELEMENT_NODE) {
+    // Use . instead of text() to match any descendant text
+    $nodeList = $xpath->query("//*[contains(., '$label')]");
+    
+    // Reverse iterate to find the deepest, most specific matching node
+    for ($i = $nodeList->length - 1; $i >= 0; $i--) {
+        $node = $nodeList->item($i);
+        
+        // Skip large container elements to ensure we're at the leaf-level label
+        if ($node->nodeName === 'body' || $node->nodeName === 'html' || $node->nodeName === 'table' || $node->nodeName === 'tbody' || $node->nodeName === 'tr') {
+            continue;
+        }
+
+        // 1. Try next sibling
+        $next = $node->nextSibling;
+        while ($next) {
+            if ($next->nodeType === XML_ELEMENT_NODE) {
+                $text = trim($next->textContent);
+                if (!empty($text)) return $text;
+            }
             $next = $next->nextSibling;
         }
-        return trim($next ? $next->textContent : '');
+        
+        // 2. Try parent's next sibling (e.g. td -> tr's next tr)
+        if ($node->parentNode && $node->parentNode->nodeName === 'td') {
+            $nextTd = $node->parentNode->nextSibling;
+            while ($nextTd) {
+                 if ($nextTd->nodeType === XML_ELEMENT_NODE && $nextTd->nodeName === 'td') {
+                     $text = trim($nextTd->textContent);
+                     if (!empty($text)) return $text;
+                 }
+                 $nextTd = $nextTd->nextSibling;
+            }
+        }
     }
     return "";
 }
@@ -214,6 +248,7 @@ $response = [
         "creditedPartyName" => $creditedPartyName,
         "creditedPartyAccountNo" => $creditedPartyAccountNo,
         "bankName" => $bankName,
+        "customerNote" => extractWithRegex($html, "የደንበኛ መልዕክት/Customer Note") ?: getNextCellText($xpath, "የደንበኛ መልዕክት/Customer Note"),
         "transactionStatus" => extractWithRegex($html, "የክፍያው ሁኔታ/transaction status") ?: getNextCellText($xpath, "የክፍያው ሁኔታ/transaction status"),
         "receiptNo" => extractReceiptNoRegex($html) ?: getNextCellText($xpath, "የክፍያ ቁጥር/Receipt No."),
         "paymentDate" => extractDateRegex($html) ?: getNextCellText($xpath, "የክፍያ ቀን/Payment date"),
