@@ -98,41 +98,29 @@ if (empty($html) || strlen($html) < 100) {
 
 // Regex patterns for extracting specific values
 function extractSettledAmount($html) {
-    // Multiple patterns to match "የተከፈለው መጠን/Settled Amount" 
-    
-    // Pattern 1: Direct match with the exact text structure
-    $pattern1 = '/የተከፈለው\s+መጠን\/Settled\s+Amount.*?<\/td>\s*<td[^>]*>\s*(\d+(?:\.\d{2})?\s+Birr)/is';
-    if (preg_match($pattern1, $html, $matches)) {
-        return trim($matches[1]);
-    }
-    
-    // Pattern 2: Look for the table row structure
-    $pattern2 = '/<tr[^>]*>.*?የተከፈለው\s+መጠን\/Settled\s+Amount.*?<td[^>]*>\s*(\d+(?:\.\d{2})?\s+Birr)/is';
-    if (preg_match($pattern2, $html, $matches)) {
-        return trim($matches[1]);
-    }
-    
-    // Pattern 3: More flexible approach - look for any cell containing "Settled Amount" followed by amount
-    $pattern3 = '/Settled\s+Amount.*?(\d+(?:\.\d{2})?\s+Birr)/is';
-    if (preg_match($pattern3, $html, $matches)) {
-        return trim($matches[1]);
-    }
-    
-    // Pattern 4: Look specifically in the transaction details table
-    $pattern4 = '/የክፍያ\s+ዝርዝር\/Transaction\s+details.*?<tr[^>]*>.*?<td[^>]*>\s*[^<]*<\/td>\s*<td[^>]*>\s*[^<]*<\/td>\s*<td[^>]*>\s*(\d+(?:\.\d{2})?\s+Birr)/is';
-    if (preg_match($pattern4, $html, $matches)) {
-        return trim($matches[1]);
-    }
-    
+    $pattern1 = '/የተከፈለው\s+መጠን\/Settled\s+Amount.*?<\/td>\s*<td[^>]*>\s*([\d,]+(?:\.\d+)?\s+Birr)/is';
+    if (preg_match($pattern1, $html, $matches)) return trim($matches[1]);
+
+    $pattern2 = '/<tr[^>]*>.*?የተከፈለው\s+መጠን\/Settled\s+Amount.*?<td[^>]*>\s*([\d,]+(?:\.\d+)?\s+Birr)/is';
+    if (preg_match($pattern2, $html, $matches)) return trim($matches[1]);
+
+    $pattern3 = '/Settled\s+Amount.*?([\d,]+(?:\.\d+)?\s+Birr)/is';
+    if (preg_match($pattern3, $html, $matches)) return trim($matches[1]);
+
+    $pattern4 = '/የክፍያ\s+ዝርዝር\/Transaction\s+details.*?<tr[^>]*>.*?<td[^>]*>\s*[^<]*<\/td>\s*<td[^>]*>\s*[^<]*<\/td>\s*<td[^>]*>\s*([\d,]+(?:\.\d+)?\s+Birr)/is';
+    if (preg_match($pattern4, $html, $matches)) return trim($matches[1]);
+
     return "";
 }
 
 function extractServiceFee($html) {
     // Pattern to match "የአገልግሎት ክፍያ/Service fee" followed by amount in Birr
-    $pattern = '/የአገልግሎት\s+ክፍያ\/Service\s+fee.*?<\/td>\s*<td[^>]*>\s*(\d+(?:\.\d{2})?\s+Birr)/i';
+    // Make sure we don't match VAT version
+    $pattern = '/የአገልግሎት\s+ክፍያ\/Service\s+fee(?!\s+ተ\.እ\.ታ).*?<\/td>\s*<td[^>]*>\s*([\d,]+(?:\.\d+)?\s+Birr)/i';
     if (preg_match($pattern, $html, $matches)) {
         return trim($matches[1]);
     }
+
     return "";
 }
 
@@ -141,20 +129,12 @@ function extractWithRegex($html, $labelPattern, $valuePattern = null) {
     if ($valuePattern === null) {
         $valuePattern = '([^<]+)';
     }
-    
-    // First try standard td sibling approach
-    $pattern1 = '/' . preg_quote($labelPattern, '/') . '.*?<\/td>\s*<td[^>]*>\s*' . $valuePattern . '/is';
-    if (preg_match($pattern1, $html, $matches)) {
+
+    $pattern = '/' . preg_quote($labelPattern, '/') . '.*?<\/td>\s*<td[^>]*>\s*' . $valuePattern . '/i';
+    if (preg_match($pattern, $html, $matches)) {
         return trim(strip_tags($matches[1]));
     }
-    
-    // Fallback: look for the label and grab the NEXT text block that's not empty, regardless of HTML structure
-    // This handles cases where the structure might be tr > td > div, etc.
-    $pattern2 = '/' . preg_quote($labelPattern, '/') . '.*?<\/(?:td|div|span|p)>[^>]*>(?:<[^>]+>)*\s*' . $valuePattern . '/is';
-    if (preg_match($pattern2, $html, $matches)) {
-        return trim(strip_tags($matches[1]));
-    }
-    
+
     return "";
 }
 
@@ -183,39 +163,14 @@ $dom->loadHTML($html);
 $xpath = new DOMXPath($dom);
 
 function getNextCellText($xpath, $label) {
-    // Use . instead of text() to match any descendant text
-    $nodeList = $xpath->query("//*[contains(., '$label')]");
-    
-    // Reverse iterate to find the deepest, most specific matching node
-    for ($i = $nodeList->length - 1; $i >= 0; $i--) {
-        $node = $nodeList->item($i);
-        
-        // Skip large container elements to ensure we're at the leaf-level label
-        if ($node->nodeName === 'body' || $node->nodeName === 'html' || $node->nodeName === 'table' || $node->nodeName === 'tbody' || $node->nodeName === 'tr') {
-            continue;
-        }
-
-        // 1. Try next sibling
-        $next = $node->nextSibling;
-        while ($next) {
-            if ($next->nodeType === XML_ELEMENT_NODE) {
-                $text = trim($next->textContent);
-                if (!empty($text)) return $text;
-            }
+    $nodeList = $xpath->query("//td[contains(., '$label')]");
+    if ($nodeList->length > 0) {
+        $cell = $nodeList->item(0);
+        $next = $cell->nextSibling;
+        while ($next && $next->nodeType !== XML_ELEMENT_NODE) {
             $next = $next->nextSibling;
         }
-        
-        // 2. Try parent's next sibling (e.g. td -> tr's next tr)
-        if ($node->parentNode && $node->parentNode->nodeName === 'td') {
-            $nextTd = $node->parentNode->nextSibling;
-            while ($nextTd) {
-                 if ($nextTd->nodeType === XML_ELEMENT_NODE && $nextTd->nodeName === 'td') {
-                     $text = trim($nextTd->textContent);
-                     if (!empty($text)) return $text;
-                 }
-                 $nextTd = $nextTd->nextSibling;
-            }
-        }
+        return trim($next ? $next->textContent : '');
     }
     return "";
 }
