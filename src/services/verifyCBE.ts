@@ -2,7 +2,6 @@ import puppeteer from 'puppeteer';
 import axios, { AxiosResponse } from 'axios';
 import pdf from 'pdf-parse';
 import https from 'https';
-import fs from 'fs';
 import logger from '../utils/logger';
 
 export interface VerifyResult {
@@ -22,7 +21,45 @@ function titleCase(str: string): string {
     return str.toLowerCase().replace(/\b\w/g, char => char.toUpperCase());
 }
 
-export async function verifyCBE(
+interface CBETransactionResponse {
+    id?: string;
+    debitAccountHolder?: string;
+    debitAccountNo?: string;
+    creditAccountHolder?: string;
+    creditAccountNo?: string;
+    amountCredited?: string;
+    dateTimes?: string[];
+    paymentDetails?: string[];
+}
+
+function extractNewCbeToken(input: string): string | null {
+    const trimmed = input.trim();
+    const urlMatch = trimmed.match(/^https?:\/\/mbreciept\.cbe\.com\.et\/([A-Za-z0-9]+)\/?$/i);
+    if (urlMatch) return urlMatch[1];
+    if (!trimmed.toUpperCase().startsWith('FT') && /^[A-Za-z0-9]{15,25}$/.test(trimmed)) return trimmed;
+    return null;
+}
+
+function parseAmount(value?: string): number | undefined {
+    const parsed = value ? Number.parseFloat(value) : NaN;
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function mapNewCBEReceipt(data: CBETransactionResponse): VerifyResult {
+    return {
+        success: true,
+        payer: data.debitAccountHolder,
+        payerAccount: data.debitAccountNo,
+        receiver: data.creditAccountHolder,
+        receiverAccount: data.creditAccountNo,
+        amount: parseAmount(data.amountCredited),
+        date: data.dateTimes?.[0] ? new Date(data.dateTimes[0]) : undefined,
+        reference: data.id,
+        reason: data.paymentDetails?.join(' ') || null
+    };
+}
+
+export async function verifyCBELegacy(
     reference: string,
     accountSuffix: string
 ): Promise<VerifyResult> {
@@ -95,6 +132,42 @@ export async function verifyCBE(
             };
         }
     }
+}
+
+export async function verifyCBENew(token: string): Promise<VerifyResult> {
+    const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+    const url = `https://mb.cbe.com.et/api/v1/transactions/public/transaction-detail/${token}`;
+
+    try {
+        logger.info(`🔎 Attempting new CBE JSON fetch: ${url}`);
+        const response = await axios.get<CBETransactionResponse>(url, {
+            httpsAgent,
+            headers: {
+                'Accept': 'application/json, text/plain, */*',
+                'Origin': 'https://mbreciept.cbe.com.et',
+                'Referer': 'https://mbreciept.cbe.com.et/',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'x-app-id': process.env.CBE_APP_ID || 'd1292e42-7400-49de-a2d3-9731caa4c819',
+                'x-app-version': process.env.CBE_APP_VERSION || '0a01980b-9859-1369-8198-59f403820000'
+            },
+            timeout: 15000
+        });
+
+        return mapNewCBEReceipt(response.data);
+    } catch (err: any) {
+        logger.error('❌ New CBE verification failed:', err.message);
+        return {
+            success: false,
+            error: err.response?.status === 404 ? 'Invalid or expired CBE receipt token.' : `New CBE verification failed: ${err.message}`
+        };
+    }
+}
+
+export async function verifyCBE(reference: string, accountSuffix?: string): Promise<VerifyResult> {
+    const token = extractNewCbeToken(reference);
+    if (token) return verifyCBENew(token);
+    if (!accountSuffix) return { success: false, error: 'Missing accountSuffix for legacy CBE verification.' };
+    return verifyCBELegacy(reference, accountSuffix);
 }
 
 async function parseCBEReceipt(buffer: ArrayBuffer): Promise<VerifyResult> {

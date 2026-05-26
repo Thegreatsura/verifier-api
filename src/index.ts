@@ -85,7 +85,7 @@ app.get('/health', (req: Request, res: Response) => {
 app.get('/', (req: Request, res: Response) => {
     res.json({
         name: 'Payment Verification API',
-        version: '2.1.0',
+        version: '3.0.3',
         endpoints: [
             '/verify-cbe',
             '/verify-telebirr',

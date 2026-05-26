@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [3.0.3] - 2026-05-26
+
+### 🚀 Added
+
+- **CBE**: Added support for the new token-based / full receipt URL verification flow alongside the legacy FT + account suffix PDF flow.
+- **Postman Collection**: Added examples for verifying new CBE token / full URL receipts without renaming `/verify-cbe`.
+
+### ♻️ Changed
+
+- **CBE Routing**: Preserved the existing `/verify-cbe` route while extending validation and routing logic to handle both legacy and new CBE receipt formats.
+- **Universal Verification**: Updated `POST /verify` to recognize new CBE receipt tokens / URLs in addition to the legacy FT + suffix path.
+
+---
+
 ## [3.0.2] - 2026-05-14
 
 ### 🚀 Added

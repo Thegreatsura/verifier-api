@@ -1,8 +1,8 @@
 {
   "info": {
     "name": "Payment Verification API",
-    "description": "Complete collection for Payment Verification API with support for CBE, Telebirr, Dashen, Abyssinia, CBE Birr, M-Pesa, and Image verification",
-    "version": "3.0.0",
+    "description": "Complete collection for Payment Verification API with support for legacy and new CBE receipts, Telebirr, Dashen, Abyssinia, CBE Birr, M-Pesa, and Image verification",
+    "version": "3.0.3",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -94,7 +94,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"reference\": \"FT253089F68Z\",\n  \"suffix\": \"16825193\"\n}"
+              "raw": "{\n  \"reference\": \"https://mbreciept.cbe.com.et/fHCxyUdnBt2PA0H8ge\"\n}"
             },
             "url": {
               "raw": "{{BASE_URL}}/verify",
@@ -105,7 +105,7 @@
                 "verify"
               ]
             },
-            "description": "Smart router that dynamically detects the payment provider (CBE, Telebirr, Dashen, Bank of Abyssinia, CBE Birr) based on the reference number structure and payload."
+            "description": "Smart router that dynamically detects the payment provider (CBE, Telebirr, Dashen, Bank of Abyssinia, CBE Birr) based on the reference number structure and payload. Supports legacy CBE FT + suffix and new CBE token/full receipt URL inputs."
           },
           "response": []
         }
@@ -137,7 +137,7 @@
                 "verify-cbe"
               ]
             },
-            "description": "Verify a CBE payment using reference number and account suffix."
+            "description": "Verify a CBE payment using either a legacy FT reference plus account suffix, or a new CBE receipt token / full receipt URL without accountSuffix."
           },
           "response": []
         },
@@ -165,7 +165,7 @@
                 }
               ]
             },
-            "description": "Verify a CBE payment using query parameters."
+            "description": "Verify a CBE payment using query parameters. Supports both legacy FT + accountSuffix and new token / full receipt URL verification."
           },
           "response": []
         }

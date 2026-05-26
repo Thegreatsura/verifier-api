@@ -14,6 +14,11 @@ interface UniversalVerifyBody {
     phoneNumber?: string;
 }
 
+function isNewCBEReference(reference: string): boolean {
+    return /^https?:\/\/mbreciept\.cbe\.com\.et\/[A-Za-z0-9]+\/?$/i.test(reference)
+        || (!reference.toUpperCase().startsWith('FT') && /^[A-Za-z0-9]{15,25}$/.test(reference));
+}
+
 router.post('/', async (req: Request<{}, {}, UniversalVerifyBody>, res: Response): Promise<void> => {
     const { reference, suffix, phoneNumber } = req.body;
 
@@ -24,9 +29,9 @@ router.post('/', async (req: Request<{}, {}, UniversalVerifyBody>, res: Response
 
     const trimmedRef = reference.trim();
     const len = trimmedRef.length;
+    const isNewCBE = isNewCBEReference(trimmedRef);
 
-    // Reject immediately if the length does not match any known provider
-    if (len !== 10 && len !== 12 && len !== 16) {
+    if (!isNewCBE && len !== 10 && len !== 12 && len !== 16) {
         res.status(400).json({ success: false, error: 'Invalid reference length for automatic sorting.' });
         return;
     }
@@ -70,6 +75,18 @@ router.post('/', async (req: Request<{}, {}, UniversalVerifyBody>, res: Response
                 res.status(400).json({ success: false, error: 'Suffix must be exactly 8 digits (CBE) or 5 digits (Abyssinia).' });
                 return;
             }
+        }
+
+        // --- NEW CBE TOKEN / URL ---
+        else if (isNewCBE) {
+            if (suffix || phoneNumber) {
+                res.status(400).json({ success: false, error: 'New CBE receipt verification expects only the token or receipt URL.' });
+                return;
+            }
+
+            const result = await verifyCBE(trimmedRef);
+            res.json(result);
+            return;
         }
 
         // --- CBE BIRR & TELEBIRR ---
