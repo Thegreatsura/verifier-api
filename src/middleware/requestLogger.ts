@@ -75,7 +75,7 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
     userAgent: req.get('user-agent'),
     body: req.method === 'POST' ? JSON.stringify(req.body) : undefined,
     query: Object.keys(req.query).length ? req.query : undefined,
-    apiKeyOwner: (req as any).apiKeyData ? (req as any).apiKeyData.owner : 'none'
+    apiKeyWorkspaceId: (req as any).apiKeyData ? ((req as any).apiKeyData.workspaceId ?? (req as any).apiKeyData.workspace?.id ?? 'unknown') : 'none'
   });
 
   // Update in-memory cache for quick access

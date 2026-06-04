@@ -49,9 +49,80 @@ model User {
   image         String?
   accounts      Account[]
   sessions      Session[]
-  ApiKey        ApiKey[]
   role          Role      @default(USER)
   createdAt     DateTime  @default(now())
+
+  currentWorkspaceId String?
+  memberships       Membership[]
+  sentInvitations   Invitation[] @relation("InvitationSender")
+}
+
+// ─── Workspaces ───────────────────────────────────────────────────────────────
+
+model Workspace {
+  id                  String    @id @default(cuid())
+  name                String
+  createdAt           DateTime  @default(now())
+
+  tier                ApiTier   @default(FREE)
+  imageCredits        Int       @default(0)
+  imageCreditsMonthly Int       @default(0)
+  imageCreditsResetAt DateTime?
+  grandfathered       Boolean   @default(false)
+
+  memberships         Membership[]
+  invitations         Invitation[]
+  apiKeys             ApiKey[]
+  webhooks            Webhook[]
+  payoutAccounts      PayoutAccount[]
+  products            Product[]
+  orders              Order[]
+  checkoutSessions    CheckoutSession[]
+  // BillingPayment lives in the verifier-ui-t3 schema only.
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model Membership {
+  id           String        @id @default(cuid())
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceId  String
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  role         WorkspaceRole @default(MEMBER)
+  createdAt    DateTime      @default(now())
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId])
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
+model Invitation {
+  id              String           @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedByUserId String
+  invitedBy       User             @relation("InvitationSender", fields: [invitedByUserId], references: [id], onDelete: Cascade)
+  email           String
+  role            WorkspaceRole    @default(MEMBER)
+  status          InvitationStatus @default(PENDING)
+  token           String           @unique
+  expiresAt       DateTime
+  createdAt       DateTime         @default(now())
+  acceptedAt      DateTime?
+
+  @@index([workspaceId])
+  @@index([email])
 }
 
 enum Role {
@@ -69,28 +140,28 @@ model VerificationToken {
 
 enum ApiTier {
   FREE
-  PAID
+  PRO
+  BUSINESS
 }
 
 model ApiKey {
-  id         String     @id @default(uuid())
-  key        String?     @unique
-
-  keyHash    String?    @unique 
-  prefix     String?    
-  tier       ApiTier    @default(FREE)
-  
-  owner      String
-  createdAt  DateTime   @default(now())
-  lastUsed   DateTime?
-  usageCount Int        @default(0)
-  isActive   Boolean    @default(true)
-  UsageLog   UsageLog[]
-  User       User?      @relation(fields: [userId], references: [id])
-  userId     String?
+  id              String            @id @default(uuid())
+  key             String?           @unique
+  keyHash         String?           @unique
+  prefix          String?
+  workspaceId     String
+  workspace       Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdAt       DateTime          @default(now())
+  lastUsed        DateTime?
+  usageCount      Int               @default(0)
+  isActive        Boolean           @default(true)
+  UsageLog        UsageLog[]
+  permissions     Json              @default("[\"verify\"]")
+  Webhook         Webhook[]
+  CheckoutSession CheckoutSession[]
 
   @@index([key])
-  @@index([userId])
+  @@index([workspaceId])
 }
 
 model UsageLog {
@@ -107,4 +178,156 @@ model UsageLog {
   @@index([apiKeyId])
   @@index([endpoint])
   @@index([createdAt])
+}
+
+// Account-owned + key-filtered webhook.
+//   - `userId` is the owning account; webhooks survive key rotation
+//   - `apiKeyIds` is a JSON array of key IDs this webhook applies to.
+//     Empty array = applies to ALL of the user's keys.
+//   - Legacy `apiKeyId` kept nullable during transition for backfill.
+model Webhook {
+  id            String            @id @default(cuid())
+  workspaceId   String
+  workspace     Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  apiKeyIds     Json              @default("[]")
+  apiKeyId      String?
+  apiKey        ApiKey?           @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  url           String
+  events        Json
+  active        Boolean           @default(true)
+  // Raw signing secret used to compute X-Veritas-Signature.
+  // Column is mapped to legacy `secretHash` for zero-downtime field rename:
+  // pre-existing rows still contain a SHA-256 hash of the original secret
+  // (legacy quirk — those webhooks need re-creation for standard verification),
+  // but NEW webhooks store the raw secret here so customers can verify in the
+  // standard HMAC(payload, secret) way.
+  signingSecret String?           @map("secretHash")
+  createdAt     DateTime          @default(now())
+  deliveries    WebhookDelivery[]
+
+  @@index([workspaceId])
+  @@index([apiKeyId])
+}
+
+model WebhookDelivery {
+  id         String   @id @default(cuid())
+  webhookId  String
+  webhook    Webhook  @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  payload    Json
+  statusCode Int?
+  success    Boolean
+  attempts   Int      @default(1)
+  createdAt  DateTime @default(now())
+
+  @@index([webhookId])
+}
+
+// Checkout sessions: account-owned + creator-key-stamped.
+//   - `userId` is the owning account (survives key revocation for audit)
+//   - `createdByKeyId` records the specific key that called POST /checkout/sessions.
+//     Mapped to existing `apiKeyId` column to avoid a DB rename.
+model CheckoutSession {
+  id                String         @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdByKeyId    String         @map("apiKeyId")
+  createdByKey      ApiKey         @relation(fields: [createdByKeyId], references: [id])
+  productName       String
+  expectedAmount    Float
+  merchantAccount   String
+  acceptedProviders Json
+  redirectUrl       String
+  webhookUrl        String?
+  status            CheckoutStatus @default(PENDING)
+  paidReference     String?
+  createdAt         DateTime       @default(now())
+  expiresAt         DateTime
+
+  @@index([workspaceId])
+  @@index([createdByKeyId])
+  @@index([status])
+}
+
+enum CheckoutStatus {
+  PENDING
+  PAID
+  EXPIRED
+}
+
+// ─── Payout accounts ─────────────────────────────────────────────────────────
+// Saved destinations where the merchant's payments land. Reusable across
+// CheckoutSessions and Products. When verifying, the system finds the user's
+// active PayoutAccount whose `providersAllowed` includes the provider the
+// buyer paid through, and matches against its `account`.
+
+enum PayoutAccountType {
+  PHONE
+  BANK
+}
+
+model PayoutAccount {
+  id               String            @id @default(cuid())
+  workspaceId      String
+  workspace        Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  label            String
+  type             PayoutAccountType
+  account          String
+  providersAllowed Json              @default("[]")
+  isDefault        Boolean           @default(false)
+  active           Boolean           @default(true)
+  createdAt        DateTime          @default(now())
+  products         Product[]
+
+  @@index([workspaceId])
+}
+
+// ─── Products & Orders ───────────────────────────────────────────────────────
+
+model Product {
+  id                String         @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  payoutAccountId   String
+  payoutAccount     PayoutAccount  @relation(fields: [payoutAccountId], references: [id])
+
+  name              String
+  description       String?  @db.Text
+  imageUrl          String?
+  price             Float
+
+  acceptedProviders Json     @default("[]")
+  maxBuyers         Int?
+  active            Boolean  @default(true)
+
+  successMessage    String?  @db.Text
+  deliveryUrl       String?
+
+  createdAt         DateTime @default(now())
+  orders            Order[]
+
+  @@index([workspaceId])
+  @@index([payoutAccountId])
+}
+
+model Order {
+  id              String      @id @default(cuid())
+  productId       String
+  product         Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  workspaceId     String
+  workspace       Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  buyerPhone      String?
+  reference       String      @unique
+  provider        String
+  amountPaid      Float
+  payoutAccount   String
+  status          OrderStatus @default(PAID)
+  createdAt       DateTime    @default(now())
+
+  @@index([productId])
+  @@index([workspaceId])
+}
+
+enum OrderStatus {
+  PAID
+  REFUNDED
 }

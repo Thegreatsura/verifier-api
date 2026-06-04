@@ -12,11 +12,17 @@ import abyssiniaRouter from './routes/verifyAbyssiniaRoute';
 import cbebirrRouter from './routes/verifyCBEBirrRoute';
 import mpesaRouter from './routes/verifyMpesaRoute';
 import universalRouter from './routes/verifyUniversalRoute';
+import batchRouter from './routes/verifyBatch';
+import checkoutRouter from './routes/checkout';
+import webhooksRouter from './routes/webhooks';
 import adminRouter from './routes/adminRoute';
 import logger from './utils/logger';
 import { verifyImageHandler } from "./services/verifyImage";
 import { requestLogger, initializeStatsCache } from './middleware/requestLogger';
 import { apiKeyAuth } from './middleware/apiKeyAuth';
+import { rateLimiter } from './middleware/rateLimiter';
+import { verifyImageGate, permissionGate } from './middleware/tierGate';
+import { verifyWebhookHook } from './middleware/verifyWebhookHook';
 import { prisma, disconnectPrisma } from './utils/prisma';
 
 const app = express();
@@ -53,6 +59,21 @@ app.use('/admin', adminRouter);
 // Add API key authentication middleware (will not affect admin routes)
 app.use(apiKeyAuth as express.RequestHandler);
 
+// Capture verify-endpoint responses so we can fire registered webhooks
+// after the response is sent. No-op on non-verify paths.
+app.use(verifyWebhookHook);
+
+// Rate limiting on all verify routes (applied after auth so apiKeyData is available)
+app.use('/verify-batch', rateLimiter);
+app.use('/verify', rateLimiter);
+app.use('/verify-cbe', rateLimiter);
+app.use('/verify-telebirr', rateLimiter);
+app.use('/verify-dashen', rateLimiter);
+app.use('/verify-abyssinia', rateLimiter);
+app.use('/verify-cbebirr', rateLimiter);
+app.use('/verify-mpesa', rateLimiter);
+app.use('/verify-image', rateLimiter);
+
 // Error handling for JSON parsing - properly typed as an error handler
 const jsonErrorHandler: ErrorRequestHandler = async (err, req, res, next): Promise<void> => {
     if (err instanceof SyntaxError && 'body' in err) {
@@ -72,8 +93,11 @@ app.use('/verify-dashen', dashenRouter);
 app.use('/verify-abyssinia', abyssiniaRouter);
 app.use('/verify-cbebirr', cbebirrRouter);
 app.use('/verify-mpesa', mpesaRouter);
-app.post('/verify-image', verifyImageHandler);
+app.post('/verify-image', verifyImageGate, verifyImageHandler);
+app.use('/verify-batch', permissionGate('verify-batch'), batchRouter);
 app.use('/verify', universalRouter);
+app.use('/checkout', permissionGate('webhooks'), checkoutRouter);   // checkout is a PRO+ feature
+app.use('/webhooks', permissionGate('webhooks'), webhooksRouter);
 
 
 // Health check endpoint

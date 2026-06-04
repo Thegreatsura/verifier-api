@@ -32,7 +32,7 @@ function fetchReceipt($url) {
     curl_setopt($ch, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
         "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language: en-US,en;q=0.5"
+        "Accept-Language: am-ET,am;q=0.9,en-US;q=0.8,en;q=0.7"
     ]);
 
     // Attempt standard fetch (Secure SSL)
@@ -114,25 +114,35 @@ function extractSettledAmount($html) {
 }
 
 function extractServiceFee($html) {
-    // Pattern to match "የአገልግሎት ክፍያ/Service fee" followed by amount in Birr
-    // Make sure we don't match VAT version
-    $pattern = '/የአገልግሎት\s+ክፍያ\/Service\s+fee(?!\s+ተ\.እ\.ታ).*?<\/td>\s*<td[^>]*>\s*([\d,]+(?:\.\d+)?\s+Birr)/i';
-    if (preg_match($pattern, $html, $matches)) {
-        return trim($matches[1]);
+    $patterns = [
+        '/የአገልግሎት\s+ክፍያ\/Service\s+fee(?!\s+ተ\.እ\.ታ).*?<\/td>\s*<td[^>]*>\s*([\d,]+(?:\.\d+)?\s+Birr)/is',
+        '/<tr[^>]*>.*?የአገልግሎት\s+ክፍያ\/Service\s+fee(?!\s+ተ\.እ\.ታ).*?<td[^>]*>\s*([\d,]+(?:\.\d+)?\s+Birr)/is',
+        '/Service\s+fee(?!\s+VAT).*?([\d,]+(?:\.\d+)?\s+Birr)/is'
+    ];
+
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $html, $matches)) {
+            return trim($matches[1]);
+        }
     }
 
     return "";
 }
 
 // Enhanced regex extraction functions
-function extractWithRegex($html, $labelPattern, $valuePattern = null) {
+function extractWithRegex($html, $labelPatterns, $valuePattern = null) {
+    if (!is_array($labelPatterns)) {
+        $labelPatterns = [$labelPatterns];
+    }
     if ($valuePattern === null) {
         $valuePattern = '([^<]+)';
     }
 
-    $pattern = '/' . preg_quote($labelPattern, '/') . '.*?<\/td>\s*<td[^>]*>\s*' . $valuePattern . '/i';
-    if (preg_match($pattern, $html, $matches)) {
-        return trim(strip_tags($matches[1]));
+    foreach ($labelPatterns as $labelPattern) {
+        $pattern = '/<td[^>]*>\s*' . preg_quote($labelPattern, '/') . '\s*<\/td>\s*<td[^>]*>\s*' . $valuePattern . '/is';
+        if (preg_match($pattern, $html, $matches)) {
+            return preg_replace('/\s+/u', ' ', trim(strip_tags($matches[1])));
+        }
     }
 
     return "";
@@ -159,25 +169,60 @@ function extractDateRegex($html) {
 // Fallback DOM parsing functions (keeping your original approach as backup)
 libxml_use_internal_errors(true);
 $dom = new DOMDocument();
-$dom->loadHTML($html);
+$dom->loadHTML('<?xml encoding="utf-8" ?>' . $html);
 $xpath = new DOMXPath($dom);
+libxml_clear_errors();
 
-function getNextCellText($xpath, $label) {
-    $nodeList = $xpath->query("//td[contains(., '$label')]");
-    if ($nodeList->length > 0) {
-        $cell = $nodeList->item(0);
-        $next = $cell->nextSibling;
-        while ($next && $next->nodeType !== XML_ELEMENT_NODE) {
-            $next = $next->nextSibling;
-        }
-        return trim($next ? $next->textContent : '');
+function xpathLiteral($value) {
+    if (strpos($value, "'") === false) {
+        return "'" . $value . "'";
     }
+
+    if (strpos($value, '"') === false) {
+        return '"' . $value . '"';
+    }
+
+    $parts = explode("'", $value);
+    $segments = [];
+    $lastIndex = count($parts) - 1;
+
+    foreach ($parts as $index => $part) {
+        if ($part !== '') {
+            $segments[] = "'" . $part . "'";
+        }
+
+        if ($index < $lastIndex) {
+            $segments[] = '"\'"';
+        }
+    }
+
+    return 'concat(' . implode(', ', $segments) . ')';
+}
+
+function getNextCellText($xpath, $labels) {
+    if (!is_array($labels)) {
+        $labels = [$labels];
+    }
+
+    foreach ($labels as $label) {
+        $query = "//td[contains(normalize-space(.), " . xpathLiteral($label) . ")]/following-sibling::td[1]";
+        $nodeList = $xpath->query($query);
+        if ($nodeList && $nodeList->length > 0) {
+            foreach ($nodeList as $node) {
+                $value = trim($node->textContent ?? '');
+                if ($value !== '') {
+                    return preg_replace('/\s+/u', ' ', $value);
+                }
+            }
+        }
+    }
+
     return "";
 }
 
 // Extract values using regex first, fallback to DOM parsing
-$settledAmount = extractSettledAmount($html) ?: getNextCellText($xpath, "የተከፈለው መጠን/Settled Amount");
-$serviceFee = extractServiceFee($html) ?: getNextCellText($xpath, "የአገልግሎት ክፍያ/Service fee");
+$settledAmount = extractSettledAmount($html) ?: getNextCellText($xpath, ["የተከፈለው መጠን/Settled Amount", "Settled Amount"]);
+$serviceFee = extractServiceFee($html) ?: getNextCellText($xpath, ["የአገልግሎት ክፍያ/Service fee", "Service fee"]);
 
 // --- Bank name extraction logic ---
 $creditedPartyName = extractWithRegex($html, "የገንዘብ ተቀባይ ስም/Credited Party name") ?: getNextCellText($xpath, "የገንዘብ ተቀባይ ስም/Credited Party name");
@@ -198,19 +243,19 @@ if ($bankAccountNumberRaw) {
 $response = [
     "success" => true,
     "data" => [
-        "payerName" => extractWithRegex($html, "የከፋይ ስም/Payer Name") ?: getNextCellText($xpath, "የከፋይ ስም/Payer Name"),
-        "payerTelebirrNo" => extractWithRegex($html, "የከፋይ ቴሌብር ቁ./Payer telebirr no.") ?: getNextCellText($xpath, "የከፋይ ቴሌብር ቁ./Payer telebirr no."),
+        "payerName" => extractWithRegex($html, ["የከፋይ ስም/Payer Name", "Payer Name"]) ?: getNextCellText($xpath, ["የከፋይ ስም/Payer Name", "Payer Name"]),
+        "payerTelebirrNo" => extractWithRegex($html, ["የከፋይ ቴሌብር ቁ./Payer telebirr no.", "Payer telebirr no.", "Payer Telebirr No."]) ?: getNextCellText($xpath, ["የከፋይ ቴሌብር ቁ./Payer telebirr no.", "Payer telebirr no.", "Payer Telebirr No."]),
         "creditedPartyName" => $creditedPartyName,
         "creditedPartyAccountNo" => $creditedPartyAccountNo,
         "bankName" => $bankName,
-        "customerNote" => extractWithRegex($html, "የደንበኛ መልዕክት/Customer Note") ?: getNextCellText($xpath, "የደንበኛ መልዕክት/Customer Note"),
-        "transactionStatus" => extractWithRegex($html, "የክፍያው ሁኔታ/transaction status") ?: getNextCellText($xpath, "የክፍያው ሁኔታ/transaction status"),
-        "receiptNo" => extractReceiptNoRegex($html) ?: getNextCellText($xpath, "የክፍያ ቁጥር/Receipt No."),
-        "paymentDate" => extractDateRegex($html) ?: getNextCellText($xpath, "የክፍያ ቀን/Payment date"),
+        "customerNote" => extractWithRegex($html, ["የደንበኛ መልዕክት/Customer Note", "Customer Note"]) ?: getNextCellText($xpath, ["የደንበኛ መልዕክት/Customer Note", "Customer Note"]),
+        "transactionStatus" => extractWithRegex($html, ["የክፍያው ሁኔታ/transaction status", "Transaction status", "transaction status"]) ?: getNextCellText($xpath, ["የክፍያው ሁኔታ/transaction status", "Transaction status", "transaction status"]),
+        "receiptNo" => extractReceiptNoRegex($html) ?: getNextCellText($xpath, ["የክፍያ ቁጥር/Receipt No.", "Receipt No."]),
+        "paymentDate" => extractDateRegex($html) ?: getNextCellText($xpath, ["የክፍያ ቀን/Payment date", "Payment date"]),
         "settledAmount" => $settledAmount,
         "serviceFee" => $serviceFee,
-        "serviceFeeVAT" => extractWithRegex($html, "የአገልግሎት ክፍያ ተ.እ.ታ/Service fee VAT") ?: getNextCellText($xpath, "የአገልግሎት ክፍያ ተ.እ.ታ/Service fee VAT"),
-        "totalPaidAmount" => extractWithRegex($html, "ጠቅላላ የተከፈለ/Total Paid Amount") ?: getNextCellText($xpath, "ጠቅላላ የተከፈለ/Total Paid Amount")
+        "serviceFeeVAT" => extractWithRegex($html, ["የአገልግሎት ክፍያ ተ.እ.ታ/Service fee VAT", "Service fee VAT"]) ?: getNextCellText($xpath, ["የአገልግሎት ክፍያ ተ.እ.ታ/Service fee VAT", "Service fee VAT"]),
+        "totalPaidAmount" => extractWithRegex($html, ["ጠቅላላ የተከፈለ/Total Paid Amount", "Total Paid Amount"]) ?: getNextCellText($xpath, ["ጠቅላላ የተከፈለ/Total Paid Amount", "Total Paid Amount"])
     ]
 ];
 

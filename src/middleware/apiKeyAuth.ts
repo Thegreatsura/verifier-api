@@ -4,32 +4,37 @@ import logger from '../utils/logger';
 import { prisma } from '../utils/prisma';
 import { AppError, ErrorType, sendErrorResponse } from '../utils/errorHandler';
 
-// Function to generate a new API key
+const ADMIN_SECRET = process.env.ADMIN_SECRET ?? '';
+
+// ─── Key generation ────────────────────────────────────────────────────────────
+
 export const generateApiKey = async (owner: string) => {
-  // Generate a secure 24-byte random key
   const rawSecret = crypto.randomBytes(24).toString('hex');
   const rawKey = `sk_live_${rawSecret}`;
-
-  // Hash it for database storage
   const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
-
-  // Create a prefix for the admin dashboard (e.g., sk_live_1a2b3c...)
   const prefix = `sk_live_${rawSecret.substring(0, 6)}...`;
 
   try {
-    // Create API key in database (Notice we do NOT save the rawKey to the 'key' column)
+    const membership = await prisma.membership.findFirst({
+      where: { userId: owner },
+      orderBy: { createdAt: 'asc' },
+      select: { workspaceId: true },
+    });
+    if (!membership) {
+      throw new Error('No workspace found for owner.');
+    }
+
     const apiKey = await prisma.apiKey.create({
       data: {
         keyHash,
         prefix,
-        owner,
+        workspaceId: membership.workspaceId,
         usageCount: 0,
         isActive: true,
-        tier: 'FREE' // Defaults to free tier
-      }
+        permissions: ['verify'],
+      },
+      include: { workspace: true },
     });
-
-    // Return BOTH the record and the raw key so the admin route can display it once
     return { apiKeyRecord: apiKey, rawKey };
   } catch (error) {
     logger.error('Error generating API key:', error);
@@ -37,20 +42,22 @@ export const generateApiKey = async (owner: string) => {
   }
 };
 
-// Function to validate an API key (Hybrid approach for old & new keys)
+// ─── Key validation ────────────────────────────────────────────────────────────
+
 export const validateApiKey = async (incomingKey: string) => {
   try {
     const incomingHash = crypto.createHash('sha256').update(incomingKey).digest('hex');
-
-    // We check for the new hashed key OR the legacy plain-text key
     return await prisma.apiKey.findFirst({
       where: {
         isActive: true,
         OR: [
           { keyHash: incomingHash },
-          { key: incomingKey } // Keeps your 199 existing users working!
-        ]
-      }
+          { key: incomingKey }, // Legacy plain-text keys
+        ],
+      },
+      include: {
+        workspace: true,
+      },
     });
   } catch (error) {
     logger.error('Error validating API key:', error);
@@ -58,44 +65,67 @@ export const validateApiKey = async (incomingKey: string) => {
   }
 };
 
-// Middleware to check API key
+// ─── Auth middleware ───────────────────────────────────────────────────────────
+
 export const apiKeyAuth = async (req: Request, res: Response, next: NextFunction) => {
-  // Skip API key check for certain routes
-  if (req.path === '/' || req.path === '/health' || req.path.startsWith('/admin')) {
+  // Public routes that skip API key auth
+  if (
+    req.path === '/' ||
+    req.path === '/health' ||
+    req.path.startsWith('/admin') ||
+    /^\/checkout\/sessions\/[^/]+\/confirm$/.test(req.path) ||
+    /^\/checkout\/sessions\/[^/]+\/public$/.test(req.path)
+  ) {
     return next();
   }
 
-  // Get API key from header or query parameter
-  const apiKey = req.headers['x-api-key'] || req.query.apiKey as string;
+  // ── Admin-proxy bypass ─────────────────────────────────────────────────────
+  // The Next.js UI sends x-admin-key + x-api-key-id so it can make calls on
+  // behalf of a user without their raw key (new-format keys store only a hash).
+  const adminKeyHeader = req.headers['x-admin-key'] as string | undefined;
+  const keyIdOverride  = req.headers['x-api-key-id'] as string | undefined;
+  if (ADMIN_SECRET && adminKeyHeader === ADMIN_SECRET && keyIdOverride) {
+    try {
+      const keyData = await prisma.apiKey.findUnique({
+        where: { id: keyIdOverride, isActive: true },
+        include: { workspace: true },
+      });
+      if (!keyData) {
+        return res.status(404).json({ success: false, error: 'API key not found.' });
+      }
+      (req as any).apiKeyData = keyData;
+      return next();
+    } catch (error) {
+      logger.error('Error looking up API key by ID override:', error);
+      return res.status(500).json({ success: false, error: 'Internal server error.' });
+    }
+  }
 
+  // ── Standard API key auth ──────────────────────────────────────────────────
+  const apiKey = req.headers['x-api-key'] || (req.query.apiKey as string);
   if (!apiKey) {
     logger.warn(`API request without API key: ${req.method} ${req.path}`);
     return res.status(401).json({ success: false, error: 'API key is required' });
   }
 
   try {
-    // Validate API key
     const keyString = Array.isArray(apiKey) ? apiKey[0] : apiKey;
     const keyData = await validateApiKey(keyString);
 
     if (!keyData) {
-      // Don't log the full invalid key for security
-      logger.warn(`Invalid API key attempt.`);
+      logger.warn('Invalid API key attempt.');
       return res.status(403).json({ success: false, error: 'Invalid API key' });
     }
 
-    // Update API key usage statistics
-    await prisma.apiKey.update({
-      where: { id: keyData.id },
-      data: {
-        lastUsed: new Date(),
-        usageCount: { increment: 1 }
-      }
-    });
+    // Update usage stats (fire-and-forget, don't block the request)
+    prisma.apiKey
+      .update({
+        where: { id: keyData.id },
+        data: { lastUsed: new Date(), usageCount: { increment: 1 } },
+      })
+      .catch((e) => logger.error('Failed to update key usage stats:', e));
 
-    // Add API key info to request for later use
     (req as any).apiKeyData = keyData;
-
     next();
   } catch (error) {
     logger.error('Error validating API key:', error);
@@ -103,11 +133,13 @@ export const apiKeyAuth = async (req: Request, res: Response, next: NextFunction
   }
 };
 
-// Get all API keys
+// ─── Admin helper ─────────────────────────────────────────────────────────────
+
 export const getApiKeys = async () => {
   try {
     return await prisma.apiKey.findMany({
-      orderBy: { createdAt: 'desc' } // Good practice to show newest first
+      include: { workspace: true },
+      orderBy: { createdAt: 'desc' },
     });
   } catch (error) {
     logger.error('Error fetching API keys:', error);
