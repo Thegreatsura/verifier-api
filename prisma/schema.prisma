@@ -53,32 +53,38 @@ model User {
   createdAt     DateTime  @default(now())
 
   currentWorkspaceId String?
-  memberships       Membership[]
-  sentInvitations   Invitation[] @relation("InvitationSender")
+  memberships        Membership[]
+  sentInvitations    Invitation[] @relation("InvitationSender")
 }
 
 // ─── Workspaces ───────────────────────────────────────────────────────────────
 
 model Workspace {
-  id                  String    @id @default(cuid())
-  name                String
-  createdAt           DateTime  @default(now())
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
 
-  tier                ApiTier   @default(FREE)
-  imageCredits        Int       @default(0)
-  imageCreditsMonthly Int       @default(0)
-  imageCreditsResetAt DateTime?
-  grandfathered       Boolean   @default(false)
+  tier                       ApiTier   @default(FREE)
+  verificationCredits        Int       @default(0)
+  verificationCreditsMonthly Int       @default(0)
+  verificationCreditsResetAt DateTime?
+  paidUntil                  DateTime?
+  planTermMonths             Int?
+  imageCredits               Int       @default(0)
+  imageCreditsMonthly        Int       @default(0)
+  imageCreditsResetAt        DateTime?
+  grandfathered              Boolean   @default(false)
 
-  memberships         Membership[]
-  invitations         Invitation[]
-  apiKeys             ApiKey[]
-  webhooks            Webhook[]
-  payoutAccounts      PayoutAccount[]
-  products            Product[]
-  orders              Order[]
-  checkoutSessions    CheckoutSession[]
-  // BillingPayment lives in the verifier-ui-t3 schema only.
+  memberships          Membership[]
+  invitations          Invitation[]
+  apiKeys              ApiKey[]
+  webhooks             Webhook[]
+  notificationChannels NotificationChannel[]
+  payoutAccounts       PayoutAccount[]
+  products             Product[]
+  paymentLinks         PaymentLink[]
+  orders               Order[]
+  billingPayments      BillingPayment[]
 }
 
 enum WorkspaceRole {
@@ -88,13 +94,13 @@ enum WorkspaceRole {
 }
 
 model Membership {
-  id           String        @id @default(cuid())
-  userId       String
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  workspaceId  String
-  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  role         WorkspaceRole @default(MEMBER)
-  createdAt    DateTime      @default(now())
+  id          String        @id @default(cuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceId String
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  role        WorkspaceRole @default(MEMBER)
+  createdAt   DateTime      @default(now())
 
   @@unique([userId, workspaceId])
   @@index([workspaceId])
@@ -145,20 +151,19 @@ enum ApiTier {
 }
 
 model ApiKey {
-  id              String            @id @default(uuid())
-  key             String?           @unique
-  keyHash         String?           @unique
-  prefix          String?
-  workspaceId     String
-  workspace       Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdAt       DateTime          @default(now())
-  lastUsed        DateTime?
-  usageCount      Int               @default(0)
-  isActive        Boolean           @default(true)
-  UsageLog        UsageLog[]
-  permissions     Json              @default("[\"verify\"]")
-  Webhook         Webhook[]
-  CheckoutSession CheckoutSession[]
+  id           String        @id @default(uuid())
+  key          String?       @unique
+  keyHash      String?       @unique
+  prefix       String?
+  workspaceId  String
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdAt    DateTime      @default(now())
+  lastUsed     DateTime?
+  usageCount   Int           @default(0)
+  isActive     Boolean       @default(true)
+  UsageLog     UsageLog[]
+  permissions  Json          @default("[\"verify\"]")
+  paymentLinks PaymentLink[]
 
   @@index([key])
   @@index([workspaceId])
@@ -180,78 +185,161 @@ model UsageLog {
   @@index([createdAt])
 }
 
-// Account-owned + key-filtered webhook.
-//   - `userId` is the owning account; webhooks survive key rotation
-//   - `apiKeyIds` is a JSON array of key IDs this webhook applies to.
-//     Empty array = applies to ALL of the user's keys.
-//   - Legacy `apiKeyId` kept nullable during transition for backfill.
+// Account-owned webhook. Every webhook in a workspace fires for every matching
+// event in that workspace, regardless of which credential triggered it.
+// Stripe/Linear/GitHub-style routing.
 model Webhook {
   id            String            @id @default(cuid())
   workspaceId   String
   workspace     Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  apiKeyIds     Json              @default("[]")
-  apiKeyId      String?
-  apiKey        ApiKey?           @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
   url           String
   events        Json
   active        Boolean           @default(true)
   // Raw signing secret used to compute X-Veritas-Signature.
-  // Column is mapped to legacy `secretHash` for zero-downtime field rename:
-  // pre-existing rows still contain a SHA-256 hash of the original secret
-  // (legacy quirk — those webhooks need re-creation for standard verification),
-  // but NEW webhooks store the raw secret here so customers can verify in the
-  // standard HMAC(payload, secret) way.
+  // Column mapped to legacy `secretHash` for backward compat.
   signingSecret String?           @map("secretHash")
   createdAt     DateTime          @default(now())
   deliveries    WebhookDelivery[]
 
   @@index([workspaceId])
-  @@index([apiKeyId])
 }
 
 model WebhookDelivery {
-  id         String   @id @default(cuid())
-  webhookId  String
-  webhook    Webhook  @relation(fields: [webhookId], references: [id], onDelete: Cascade)
-  payload    Json
-  statusCode Int?
-  success    Boolean
-  attempts   Int      @default(1)
-  createdAt  DateTime @default(now())
+  id                  String                @id @default(cuid())
+  webhookId           String
+  webhook             Webhook               @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  event               String                @default("unknown")
+  payload             Json
+  statusCode          Int?
+  success             Boolean               @default(false)
+  status              WebhookDeliveryStatus @default(QUEUED)
+  attempts            Int                   @default(0)
+  maxAttempts         Int                   @default(4)
+  lastError           String?               @db.Text
+  responseBody        String?               @db.Text
+  queueJobId          String?
+  nextRetryAt         DateTime?
+  deliveredAt         DateTime?
+  replayOfDeliveryId  String?
+  replayOfDelivery    WebhookDelivery?      @relation("WebhookDeliveryReplay", fields: [replayOfDeliveryId], references: [id], onDelete: SetNull)
+  replays             WebhookDelivery[]     @relation("WebhookDeliveryReplay")
+  resolvedByReplayId  String?
+  resolvedByReplay    WebhookDelivery?      @relation("WebhookDeliveryResolution", fields: [resolvedByReplayId], references: [id], onDelete: SetNull)
+  resolvedDeadLetters WebhookDelivery[]     @relation("WebhookDeliveryResolution")
+  resolvedAt          DateTime?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @default(now()) @updatedAt
 
   @@index([webhookId])
+  @@index([webhookId, status])
+  @@index([replayOfDeliveryId])
+  @@index([resolvedByReplayId])
 }
 
-// Checkout sessions: account-owned + creator-key-stamped.
-//   - `userId` is the owning account (survives key revocation for audit)
-//   - `createdByKeyId` records the specific key that called POST /checkout/sessions.
-//     Mapped to existing `apiKeyId` column to avoid a DB rename.
-model CheckoutSession {
-  id                String         @id @default(cuid())
-  workspaceId       String
-  workspace         Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdByKeyId    String         @map("apiKeyId")
-  createdByKey      ApiKey         @relation(fields: [createdByKeyId], references: [id])
-  productName       String
-  expectedAmount    Float
-  merchantAccount   String
-  acceptedProviders Json
-  redirectUrl       String
-  webhookUrl        String?
-  status            CheckoutStatus @default(PENDING)
-  paidReference     String?
-  createdAt         DateTime       @default(now())
-  expiresAt         DateTime
+enum WebhookDeliveryStatus {
+  QUEUED
+  PROCESSING
+  RETRYING
+  SUCCEEDED
+  DEAD_LETTER
+  CANCELLED
+}
+
+model NotificationChannel {
+  id          String                  @id @default(cuid())
+  workspaceId String
+  workspace   Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  type        NotificationChannelType
+  label       String?
+  destination String
+  events      Json
+  active      Boolean                 @default(true)
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @default(now()) @updatedAt
+  deliveries  NotificationDelivery[]
 
   @@index([workspaceId])
-  @@index([createdByKeyId])
-  @@index([status])
+  @@index([workspaceId, type])
 }
 
-enum CheckoutStatus {
-  PENDING
-  PAID
+model NotificationDelivery {
+  id           String                     @id @default(cuid())
+  channelId    String
+  channel      NotificationChannel        @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  event        String
+  payload      Json
+  success      Boolean                    @default(false)
+  status       NotificationDeliveryStatus @default(QUEUED)
+  attempts     Int                        @default(0)
+  maxAttempts  Int                        @default(4)
+  lastError    String?                    @db.Text
+  responseBody String?                    @db.Text
+  queueJobId   String?
+  nextRetryAt  DateTime?
+  deliveredAt  DateTime?
+  createdAt    DateTime                   @default(now())
+  updatedAt    DateTime                   @default(now()) @updatedAt
+
+  @@index([channelId])
+  @@index([channelId, status])
+}
+
+enum NotificationChannelType {
+  EMAIL
+  TELEGRAM
+}
+
+enum NotificationDeliveryStatus {
+  QUEUED
+  PROCESSING
+  RETRYING
+  SUCCEEDED
+  DEAD_LETTER
+  CANCELLED
+}
+
+model PaymentLink {
+  id                  String             @id @default(cuid())
+  workspaceId         String
+  workspace           Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  productId           String?
+  product             Product?           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdByKeyId      String?            @map("apiKeyId")
+  createdByKey        ApiKey?            @relation(fields: [createdByKeyId], references: [id])
+  creatorType         PaymentLinkCreator @default(API_KEY)
+  name                String
+  mode                PaymentLinkMode
+  fixedAmount         Float
+  acceptedProviders   Json               @default("[]")
+  redirectUrl         String?
+  status              PaymentLinkStatus  @default(ACTIVE)
+  isDefaultForProduct Boolean            @default(false)
+  createdAt           DateTime           @default(now())
+  expiresAt           DateTime?
+  payoutAccounts      PayoutAccount[]    @relation("PaymentLinkPayoutAccounts")
+  orders              Order[]
+
+  @@index([workspaceId])
+  @@index([productId])
+  @@index([createdByKeyId])
+  @@index([status])
+  @@index([isDefaultForProduct])
+}
+
+enum PaymentLinkStatus {
+  ACTIVE
+  INACTIVE
   EXPIRED
+}
+
+enum PaymentLinkMode {
+  PRODUCT
+  CUSTOM
+}
+
+enum PaymentLinkCreator {
+  DASHBOARD
+  API_KEY
 }
 
 // ─── Payout accounts ─────────────────────────────────────────────────────────
@@ -266,17 +354,19 @@ enum PayoutAccountType {
 }
 
 model PayoutAccount {
-  id               String            @id @default(cuid())
-  workspaceId      String
-  workspace        Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  label            String
-  type             PayoutAccountType
-  account          String
-  providersAllowed Json              @default("[]")
-  isDefault        Boolean           @default(false)
-  active           Boolean           @default(true)
-  createdAt        DateTime          @default(now())
-  products         Product[]
+  id                String            @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  label             String
+  accountHolderName String?
+  type              PayoutAccountType
+  account           String
+  providersAllowed  Json              @default("[]")
+  isDefault         Boolean           @default(false)
+  active            Boolean           @default(true)
+  createdAt         DateTime          @default(now())
+  products          Product[]         @relation("ProductPayoutAccounts")
+  paymentLinks      PaymentLink[]     @relation("PaymentLinkPayoutAccounts")
 
   @@index([workspaceId])
 }
@@ -284,45 +374,49 @@ model PayoutAccount {
 // ─── Products & Orders ───────────────────────────────────────────────────────
 
 model Product {
-  id                String         @id @default(cuid())
-  workspaceId       String
-  workspace         Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  payoutAccountId   String
-  payoutAccount     PayoutAccount  @relation(fields: [payoutAccountId], references: [id])
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  name              String
-  description       String?  @db.Text
-  imageUrl          String?
-  price             Float
+  name        String
+  description String? @db.Text
+  imageUrl    String?
+  price       Float
 
-  acceptedProviders Json     @default("[]")
+  acceptedProviders Json    @default("[]")
   maxBuyers         Int?
-  active            Boolean  @default(true)
+  active            Boolean @default(true)
 
-  successMessage    String?  @db.Text
-  deliveryUrl       String?
+  successMessage String? @db.Text
+  deliveryUrl    String?
 
-  createdAt         DateTime @default(now())
-  orders            Order[]
+  createdAt      DateTime        @default(now())
+  payoutAccounts PayoutAccount[] @relation("ProductPayoutAccounts")
+  paymentLinks   PaymentLink[]
+  orders         Order[]
 
   @@index([workspaceId])
-  @@index([payoutAccountId])
 }
 
 model Order {
-  id              String      @id @default(cuid())
-  productId       String
-  product         Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
-  workspaceId     String
-  workspace       Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  buyerPhone      String?
-  reference       String      @unique
-  provider        String
-  amountPaid      Float
-  payoutAccount   String
-  status          OrderStatus @default(PAID)
-  createdAt       DateTime    @default(now())
+  id            String      @id @default(cuid())
+  paymentLinkId String
+  paymentLink   PaymentLink @relation(fields: [paymentLinkId], references: [id], onDelete: Cascade)
+  productId     String?
+  product       Product?    @relation(fields: [productId], references: [id], onDelete: SetNull)
+  workspaceId   String
+  workspace     Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  buyerName     String?
+  buyerPhone    String?
+  buyerEmail    String?
+  reference     String      @unique
+  provider      String
+  amountPaid    Float
+  payoutAccount String
+  status        OrderStatus @default(PAID)
+  createdAt     DateTime    @default(now())
 
+  @@index([paymentLinkId])
   @@index([productId])
   @@index([workspaceId])
 }
@@ -330,4 +424,71 @@ model Order {
 enum OrderStatus {
   PAID
   REFUNDED
+}
+
+model PlanPricingConfig {
+  id                      String   @id @default("default")
+  proPriceMonthlyETB      Int
+  businessPriceMonthlyETB Int
+  discount3MonthsPercent  Int      @default(10)
+  discount6MonthsPercent  Int      @default(18)
+  discount12MonthsPercent Int      @default(30)
+  freeQuotaNewMonthly     Int      @default(100)
+  freeQuotaLegacyMonthly  Int      @default(250)
+  proQuotaMonthly         Int      @default(2000)
+  businessQuotaMonthly    Int      @default(10000)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+}
+
+model BillingPayment {
+  id                         String    @id @default(cuid())
+  workspaceId                String
+  workspace                  Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  reference                  String    @unique
+  provider                   String
+  /// "SUBSCRIPTION_UPGRADE" | "CREDIT_TOPUP"
+  type                       String    @default("SUBSCRIPTION_UPGRADE")
+  targetTier                 String    @default("")
+  termMonths                 Int       @default(1)
+  discountPercent            Int       @default(0)
+  amountETB                  Float
+  /// credits granted (populated for CREDIT_TOPUP payments)
+  creditsGranted             Int?
+  verificationCreditsMonthly Int?
+  imageCreditsMonthly        Int?
+  planEndsAt                 DateTime?
+  createdAt                  DateTime  @default(now())
+
+  @@index([workspaceId])
+}
+
+model Announcement {
+  id          String                @id @default(cuid())
+  title       String?
+  message     String                @db.Text
+  surface     AnnouncementSurface
+  placement   AnnouncementPlacement
+  active      Boolean               @default(true)
+  dismissible Boolean               @default(true)
+  priority    Int                   @default(0)
+  startsAt    DateTime?
+  endsAt      DateTime?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  @@index([surface, placement, active])
+  @@index([startsAt])
+  @@index([endsAt])
+}
+
+enum AnnouncementSurface {
+  LANDING
+  DASHBOARD
+}
+
+enum AnnouncementPlacement {
+  STICKY_BANNER
+  POPUP
+  DASHBOARD_OVERVIEW
 }

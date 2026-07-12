@@ -1,6 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import logger from '../utils/logger';
 import { prisma } from '../utils/prisma';
+import { getWorkspaceContext } from '../utils/workspaceContext';
+import { getRequestIp } from '../utils/requestIp';
 
 // In-memory cache for quick stats access
 const statsCache = {
@@ -66,12 +68,13 @@ export const initializeStatsCache = async () => {
 export const requestLogger = (req: Request, res: Response, next: NextFunction) => {
   const start = Date.now();
   const requestId = Math.random().toString(36).substring(2, 15);
+  const requestIp = getRequestIp(req);
 
   // Log request details
   logger.info(`[${requestId}] Incoming ${req.method} request to ${req.originalUrl}`, {
     method: req.method,
     url: req.originalUrl,
-    ip: req.ip,
+    ip: requestIp,
     userAgent: req.get('user-agent'),
     body: req.method === 'POST' ? JSON.stringify(req.body) : undefined,
     query: Object.keys(req.query).length ? req.query : undefined,
@@ -95,8 +98,8 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
   endpointStat.count++;
 
   // Track by IP address
-  const ipCount = statsCache.ipStats.get(req.ip ?? '') || 0;
-  statsCache.ipStats.set(req.ip ?? '', ipCount + 1);
+  const ipCount = statsCache.ipStats.get(requestIp) || 0;
+  statsCache.ipStats.set(requestIp, ipCount + 1);
 
   // Use the 'finish' event to capture response completion
   res.on('finish', async () => {
@@ -112,6 +115,11 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
     endpointStat.avgResponseTime =
       (endpointStat.avgResponseTime * (endpointStat.count - 1) + responseTime) / endpointStat.count;
 
+    // Get auth context for logging
+    const context = getWorkspaceContext(req);
+    const source = context?.source ?? ((req as any).publicVerify ? 'public' : 'unknown');
+    const workspaceId = context?.workspace.id || 'none';
+    
     // Get a safe representation of the key for logging (prefix or legacy substring)
     const keyDetails = (req as any).apiKeyData;
     const safeKeyLog = keyDetails ? (keyDetails.prefix || (keyDetails.key ? keyDetails.key.substring(0, 8) : 'unknown')) : 'none';
@@ -120,16 +128,19 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
       statusCode: res.statusCode,
       responseTime,
       contentLength: res.get('Content-Length') || 'unknown',
-      apiKey: safeKeyLog
+      apiKey: safeKeyLog,
+      source,
+      workspaceId
     });
 
     if (res.statusCode >= 400) {
       logger.warn(`[${requestId}] Error occurred with status ${res.statusCode}`);
     }
 
-    // Store usage log in database if API key is present
+    // Store usage log in database only for API key auth (not dashboard auth)
+    // Dashboard requests are internal management calls, not customer-facing API consumption
     try {
-      if ((req as any).apiKeyData) {
+      if (context?.source === 'api_key' && (req as any).apiKeyData) {
         await prisma.usageLog.create({
           data: {
             apiKeyId: (req as any).apiKeyData.id,
@@ -137,7 +148,7 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
             method: req.method,
             statusCode: res.statusCode,
             responseTime,
-            ip: req.ip || 'unknown'
+            ip: requestIp
           }
         });
       }

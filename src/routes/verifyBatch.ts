@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { runSmartVerify } from '../services/verifyUniversal';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
+import { getWorkspaceContext } from '../utils/workspaceContext';
 
 const router = Router();
 
@@ -19,10 +20,11 @@ interface BatchBody {
 
 router.post('/', async (req: Request<{}, {}, BatchBody>, res: Response): Promise<void> => {
   const apiKeyData = (req as any).apiKeyData;
+  const workspaceContext = getWorkspaceContext(req);
 
   // ── Tier gate: PRO and BUSINESS only (ALL FREE workspaces blocked) ──────────
-  const workspaceTier = apiKeyData?.workspace?.tier ?? 'FREE';
-  if (!apiKeyData || workspaceTier === 'FREE') {
+  const workspaceTier = workspaceContext?.workspace.tier ?? 'FREE';
+  if (!workspaceContext || workspaceTier === 'FREE') {
     res.status(402).json({
       success: false,
       error: 'Batch verification requires a Pro or Business plan.',
@@ -99,6 +101,7 @@ router.post('/', async (req: Request<{}, {}, BatchBody>, res: Response): Promise
 
   void (async () => {
     try {
+      if (!apiKeyData?.id) return;
       await prisma.usageLog.createMany({
         data: results.map((r) => ({
           apiKeyId: apiKeyData.id,

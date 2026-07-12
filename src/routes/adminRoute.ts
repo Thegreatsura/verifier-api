@@ -2,6 +2,7 @@ import { Router, Request, Response, RequestHandler, NextFunction } from 'express
 import { generateApiKey, getApiKeys } from '../middleware/apiKeyAuth';
 import { getUsageStats } from '../middleware/requestLogger';
 import { fireRegisteredWebhook } from '../utils/fireWebhook';
+import { getWebhookQueueHealth, replayWebhookDelivery } from '../queues/webhookQueue';
 import { verifyTelebirr } from '../services/verifyTelebirr';
 import { verifyCBE } from '../services/verifyCBE';
 import { verifyCBEBirr } from '../services/verifyCBEBirr';
@@ -54,6 +55,17 @@ router.post('/api-keys', checkAdminAuth as RequestHandler, async (req: Request, 
     } catch (err) {
         logger.error('Error generating API key:', err);
         res.status(500).json({ success: false, error: 'Failed to generate API key' });
+    }
+});
+
+// Webhook queue health for dashboard/admin visibility
+router.get('/webhook-queue-health', checkAdminAuth as RequestHandler, async (_req: Request, res: Response): Promise<void> => {
+    try {
+        const health = await getWebhookQueueHealth();
+        res.json({ success: true, data: health });
+    } catch (err) {
+        logger.error('Failed to get webhook queue health:', err);
+        res.status(500).json({ success: false, error: 'Failed to get webhook queue health.' });
     }
 });
 
@@ -190,15 +202,15 @@ router.get('/stats', checkAdminAuth as RequestHandler, async (req: Request, res:
     try {
         const [
             usageStats,
-            checkoutByStatus,
+            paymentLinksByStatus,
             webhookDeliveries,
             tierCounts,
         ] = await Promise.all([
             // Existing request/endpoint stats
             getUsageStats(),
 
-            // Checkout sessions grouped by status
-            prisma.checkoutSession.groupBy({
+            // Payment links grouped by status
+            prisma.paymentLink.groupBy({
                 by: ['status'],
                 _count: { _all: true },
             }),
@@ -216,13 +228,13 @@ router.get('/stats', checkAdminAuth as RequestHandler, async (req: Request, res:
             }),
         ]);
 
-        // Shape checkout totals
-        const checkoutStats: Record<string, number> = { PENDING: 0, PAID: 0, EXPIRED: 0 };
-        for (const row of checkoutByStatus) {
-            checkoutStats[row.status] = row._count._all;
+        // Shape payment link totals
+        const paymentLinkStats: Record<string, number> = { ACTIVE: 0, INACTIVE: 0, EXPIRED: 0 };
+        for (const row of paymentLinksByStatus) {
+            paymentLinkStats[row.status] = row._count._all;
         }
-        checkoutStats.total =
-            checkoutStats.PENDING + checkoutStats.PAID + checkoutStats.EXPIRED;
+        paymentLinkStats.total =
+            paymentLinkStats.ACTIVE + paymentLinkStats.INACTIVE + paymentLinkStats.EXPIRED;
 
         // Shape delivery totals
         const deliveryStats = { succeeded: 0, failed: 0, total: 0 };
@@ -249,7 +261,7 @@ router.get('/stats', checkAdminAuth as RequestHandler, async (req: Request, res:
             success: true,
             data: {
                 ...usageStats,
-                checkoutSessions: checkoutStats,
+                paymentLinks: paymentLinkStats,
                 webhookDeliveries: deliveryStats,
                 revenue: revenueEstimate,
             },
@@ -294,21 +306,24 @@ router.post(
 
       const delivery = await prisma.webhookDelivery.findFirst({
         where: { id: deliveryId, webhookId },
-        select: { id: true, payload: true },
+        select: { id: true, success: true, status: true },
       });
       if (!delivery) {
         res.status(404).json({ success: false, error: 'Delivery not found.' });
         return;
       }
+      if (delivery.success) {
+        res.status(400).json({ success: false, error: 'Successful deliveries cannot be replayed.' });
+        return;
+      }
 
-      fireRegisteredWebhook(
-        webhook.id,
-        webhook.signingSecret,
-        webhook.url,
-        delivery.payload as Record<string, unknown>,
-      );
+      const replay = await replayWebhookDelivery(webhook.id, delivery.id);
 
-      res.json({ success: true, message: 'Retry enqueued.' });
+      res.json({
+        success: true,
+        replayDeliveryId: replay.deliveryId,
+        message: delivery.status === 'DEAD_LETTER' ? 'Replay enqueued from dead letter.' : 'Retry enqueued.',
+      });
     } catch (err) {
       logger.error('Admin webhook-retry failed:', err);
       res.status(500).json({ success: false, error: 'Failed to enqueue retry.' });
@@ -348,7 +363,7 @@ router.post(
       }
 
       const testPayload = {
-        event: 'test',
+        event: 'webhook.test',
         test: true,
         sentAt: new Date().toISOString(),
         webhookId: webhook.id,
@@ -551,24 +566,21 @@ router.post(
 );
 
 // ─── Admin: generic webhook notify ────────────────────────────────────────────
-// Fires all matching webhooks owned by `workspaceId` that are subscribed to
-// `event`, with the given `payload`. Used by the UI's product purchase flow
-// (order.paid, product.sold_out) and any future workspace-level events.
+// Fires every active webhook in `workspaceId` that's subscribed to `event`
+// with the given `payload`. Used by the UI's product purchase flow
+// (payment_link.paid, product.sold_out) and any future workspace-level events.
 //
-// If `callingKeyId` is provided, webhooks are filtered by their `apiKeyIds`
-// array (empty array = match all keys; otherwise must include callingKeyId).
-// If omitted, all matching workspace webhooks fire.
+// Webhooks always fire workspace-wide — there's no per-key filtering anymore.
 //
-// Body: { workspaceId, event, payload, callingKeyId? }
+// Body: { workspaceId, event, payload }
 router.post(
   '/notify-user',
   checkAdminAuth as RequestHandler,
   async (req: Request, res: Response): Promise<void> => {
-    const { workspaceId, event, payload, callingKeyId } = req.body as {
+    const { workspaceId, event, payload } = req.body as {
       workspaceId?: string;
       event?: string;
       payload?: Record<string, unknown>;
-      callingKeyId?: string;
     };
 
     if (!workspaceId || !event || !payload || typeof payload !== 'object') {
@@ -582,19 +594,13 @@ router.post(
     try {
       const webhooks = await prisma.webhook.findMany({
         where: { workspaceId, active: true },
-        select: { id: true, url: true, signingSecret: true, events: true, apiKeyIds: true },
+        select: { id: true, url: true, signingSecret: true, events: true },
       });
 
       let fired = 0;
       for (const wh of webhooks) {
         const events = Array.isArray(wh.events) ? (wh.events as string[]) : [];
         if (!events.includes(event)) continue;
-
-        // Apply key filter only when a callingKeyId is provided
-        if (callingKeyId) {
-          const keyIds = Array.isArray(wh.apiKeyIds) ? (wh.apiKeyIds as string[]) : [];
-          if (keyIds.length > 0 && !keyIds.includes(callingKeyId)) continue;
-        }
 
         fireRegisteredWebhook(wh.id, wh.signingSecret, wh.url, {
           event,

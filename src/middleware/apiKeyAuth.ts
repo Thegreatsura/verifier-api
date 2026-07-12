@@ -5,6 +5,10 @@ import { prisma } from '../utils/prisma';
 import { AppError, ErrorType, sendErrorResponse } from '../utils/errorHandler';
 
 const ADMIN_SECRET = process.env.ADMIN_SECRET ?? '';
+const DASHBOARD_SECRET = process.env.DASHBOARD_SECRET ?? '';
+const PUBLIC_VERIFY_PATHS = new Set([
+  '/verify',
+]);
 
 // ─── Key generation ────────────────────────────────────────────────────────────
 
@@ -73,9 +77,40 @@ export const apiKeyAuth = async (req: Request, res: Response, next: NextFunction
     req.path === '/' ||
     req.path === '/health' ||
     req.path.startsWith('/admin') ||
-    /^\/checkout\/sessions\/[^/]+\/confirm$/.test(req.path) ||
-    /^\/checkout\/sessions\/[^/]+\/public$/.test(req.path)
+    /^\/payment-links\/[^/]+\/confirm$/.test(req.path) ||
+    /^\/payment-links\/[^/]+\/public$/.test(req.path)
   ) {
+    return next();
+  }
+
+  // ── Dashboard auth ────────────────────────────────────────────────────────
+  // The Next.js UI server authenticates as itself, scoped to a workspace.
+  const dashboardKeyHeader = req.headers['x-dashboard-key'] as string | undefined;
+  const workspaceIdHeader = req.headers['x-workspace-id'] as string | undefined;
+  if (DASHBOARD_SECRET && dashboardKeyHeader === DASHBOARD_SECRET && workspaceIdHeader) {
+    try {
+      const workspace = await prisma.workspace.findUnique({
+        where: { id: workspaceIdHeader },
+      });
+      if (!workspace) {
+        return res.status(404).json({ success: false, error: 'Workspace not found.' });
+      }
+      (req as any).workspaceContext = { workspace, source: 'dashboard' };
+      (req as any).apiKeyData = null;
+      return next();
+    } catch (error) {
+      logger.error('Error looking up workspace for dashboard auth:', error);
+      return res.status(500).json({ success: false, error: 'Internal server error.' });
+    }
+  }
+
+  // ── Public verify proxy auth ───────────────────────────────────────────────
+  // The Next.js server can forward public homepage verifications without
+  // attributing them to any workspace or API key.
+  const publicVerifyHeader = req.headers['x-public-verify-key'] as string | undefined;
+  if (DASHBOARD_SECRET && publicVerifyHeader === DASHBOARD_SECRET && PUBLIC_VERIFY_PATHS.has(req.path)) {
+    (req as any).publicVerify = true;
+    (req as any).apiKeyData = null;
     return next();
   }
 

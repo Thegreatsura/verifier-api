@@ -7,16 +7,15 @@
  * GET    /webhooks/:id/deliveries              PRO+ — list delivery history
  * POST   /webhooks/:id/retry/:deliveryId       PRO+ — manually retry a delivery
  *
- * Ownership model (post-refactor):
- *   Webhooks are owned by the User (account-level), not by a single API key.
- *   The `apiKeyIds` JSON array on each webhook says which keys this webhook
- *   applies to. An empty array means "all of the user's keys."
- *   Any key belonging to the user can list/manage all webhooks the user owns.
+ * Webhooks are workspace-owned. Every webhook fires for every matching event
+ * in its workspace, regardless of which credential triggered the event.
+ * Stripe/Linear/GitHub-style routing — no per-key filtering.
  */
 
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { fireRegisteredWebhook } from '../utils/fireWebhook';
+import { replayWebhookDelivery } from '../queues/webhookQueue';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
 
@@ -26,32 +25,131 @@ const MAX_WEBHOOKS_PER_WORKSPACE = 20;
 const DELIVERY_PAGE_SIZE = 50;
 
 const VALID_EVENTS = [
-  'checkout.paid',
+  'payment_link.paid',
   'verification.success',
   'verification.failed',
-  'order.paid',
   'product.sold_out',
+  'webhook.dead_letter',
 ] as const;
 type WebhookEvent = (typeof VALID_EVENTS)[number];
+type DeliveryStatus = 'QUEUED' | 'PROCESSING' | 'RETRYING' | 'SUCCEEDED' | 'DEAD_LETTER' | 'CANCELLED';
 
-// ─── Helper: validate that every keyId in apiKeyIds belongs to workspaceId ───
-async function validateKeyIdsBelongToWorkspace(
-  keyIds: string[],
-  workspaceId: string,
-): Promise<{ ok: true } | { ok: false; bad: string[] }> {
-  if (keyIds.length === 0) return { ok: true };
-  const owned = await prisma.apiKey.findMany({
-    where: { id: { in: keyIds }, workspaceId },
-    select: { id: true },
+function isValidWebhookEvents(events: unknown): events is WebhookEvent[] {
+  return Array.isArray(events)
+    && events.length > 0
+    && events.every((event) => (VALID_EVENTS as readonly string[]).includes(String(event)));
+}
+
+function buildCountMap(
+  rows: Array<{ webhookId: string; _count?: { _all?: number } | true }>,
+): Map<string, number> {
+  return new Map(
+    rows.map((row) => [
+      row.webhookId,
+      typeof row._count === 'object' ? (row._count._all ?? 0) : 0,
+    ]),
+  );
+}
+
+async function listWebhooksWithStats(workspaceId: string) {
+  const webhooks = await prisma.webhook.findMany({
+    where: { workspaceId },
+    orderBy: { createdAt: 'desc' },
+    select: {
+      id: true,
+      url: true,
+      events: true,
+      active: true,
+      createdAt: true,
+    },
   });
-  const ownedSet = new Set(owned.map((k) => k.id));
-  const bad = keyIds.filter((id) => !ownedSet.has(id));
-  return bad.length === 0 ? { ok: true } : { ok: false, bad };
+
+  if (webhooks.length === 0) {
+    return [];
+  }
+
+  const webhookIds = webhooks.map((webhook) => webhook.id);
+  const [statusCounts, unresolvedDeadLetters, recoveredDeadLetters, lastDeliveries] = await prisma.$transaction([
+    prisma.webhookDelivery.groupBy({
+      by: ['webhookId', 'status'],
+      orderBy: [{ webhookId: 'asc' }, { status: 'asc' }],
+      where: { webhookId: { in: webhookIds } },
+      _count: { _all: true },
+    }),
+    prisma.webhookDelivery.groupBy({
+      by: ['webhookId'],
+      orderBy: { webhookId: 'asc' },
+      where: {
+        webhookId: { in: webhookIds },
+        status: 'DEAD_LETTER',
+        resolvedByReplayId: null,
+      },
+      _count: { _all: true },
+    }),
+    prisma.webhookDelivery.groupBy({
+      by: ['webhookId'],
+      orderBy: { webhookId: 'asc' },
+      where: {
+        webhookId: { in: webhookIds },
+        status: 'DEAD_LETTER',
+        resolvedByReplayId: { not: null },
+      },
+      _count: { _all: true },
+    }),
+    prisma.webhookDelivery.findMany({
+      where: { webhookId: { in: webhookIds } },
+      orderBy: { createdAt: 'desc' },
+      distinct: ['webhookId'],
+      select: {
+        webhookId: true,
+        event: true,
+        status: true,
+        createdAt: true,
+      },
+    }),
+  ]);
+
+  const statusMap = new Map<string, Partial<Record<DeliveryStatus, number>>>();
+  for (const row of statusCounts) {
+    const existing = statusMap.get(row.webhookId) ?? {};
+    existing[row.status as DeliveryStatus] = typeof row._count === 'object'
+      ? (row._count._all ?? 0)
+      : 0;
+    statusMap.set(row.webhookId, existing);
+  }
+
+  const unresolvedDeadMap = buildCountMap(unresolvedDeadLetters);
+  const recoveredDeadMap = buildCountMap(recoveredDeadLetters);
+  const lastDeliveryMap = new Map(lastDeliveries.map((delivery) => [delivery.webhookId, delivery]));
+
+  return webhooks.map((webhook) => {
+    const counts = statusMap.get(webhook.id) ?? {};
+    const totalDeliveries = Object.values(counts).reduce((sum, count) => sum + (count ?? 0), 0);
+    const succeededDeliveries = counts.SUCCEEDED ?? 0;
+    const failedDeliveries = (counts.DEAD_LETTER ?? 0) + (counts.CANCELLED ?? 0);
+    const inFlightDeliveries = (counts.QUEUED ?? 0) + (counts.PROCESSING ?? 0) + (counts.RETRYING ?? 0);
+    const lastDelivery = lastDeliveryMap.get(webhook.id);
+
+    return {
+      ...webhook,
+      stats: {
+        totalDeliveries,
+        successRate: totalDeliveries > 0 ? Math.round((succeededDeliveries / totalDeliveries) * 100) : null,
+        deadLetters: unresolvedDeadMap.get(webhook.id) ?? 0,
+        recoveredDeadLetters: recoveredDeadMap.get(webhook.id) ?? 0,
+        inFlightDeliveries,
+        succeededDeliveries,
+        failedDeliveries,
+        lastDeliveryAt: lastDelivery?.createdAt ?? null,
+        lastDeliveryStatus: lastDelivery?.status ?? null,
+        lastDeliveryEvent: lastDelivery?.event ?? null,
+      },
+    };
+  });
 }
 
 // ─── POST /webhooks ───────────────────────────────────────────────────────────
-// Body: { url: string, events: string[], apiKeyIds?: string[] }
-//   apiKeyIds defaults to [] (applies to all of the user's keys)
+// Body: { url: string, events: string[] }
 
 router.post('/', async (req: Request, res: Response): Promise<void> => {
   const apiKeyData = (req as any).apiKeyData as { workspaceId?: string };
@@ -64,10 +162,9 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const { url, events, apiKeyIds: rawApiKeyIds } = req.body as {
+  const { url, events } = req.body as {
     url?: string;
     events?: string[];
-    apiKeyIds?: unknown;
   };
 
   // ── url ────────────────────────────────────────────────────────────────────
@@ -95,20 +192,6 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  // ── apiKeyIds ──────────────────────────────────────────────────────────────
-  const apiKeyIds: string[] = Array.isArray(rawApiKeyIds)
-    ? (rawApiKeyIds as unknown[]).filter((x): x is string => typeof x === 'string')
-    : [];
-
-  const validation = await validateKeyIdsBelongToWorkspace(apiKeyIds, workspaceId);
-  if (!validation.ok) {
-    res.status(400).json({
-      success: false,
-      error: `apiKeyIds contains keys not owned by this account: ${validation.bad.join(', ')}`,
-    });
-    return;
-  }
-
   // ── Per-workspace cap ──────────────────────────────────────────────────────
   const count = await prisma.webhook.count({ where: { workspaceId, active: true } });
   if (count >= MAX_WEBHOOKS_PER_WORKSPACE) {
@@ -127,12 +210,11 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     const webhook = await prisma.webhook.create({
       data: {
         workspaceId,
-        apiKeyIds,
         url,
         events: events as WebhookEvent[],
         signingSecret: rawSecret,
       },
-      select: { id: true, url: true, events: true, active: true, apiKeyIds: true, createdAt: true },
+      select: { id: true, url: true, events: true, active: true, createdAt: true },
     });
 
     res.status(201).json({
@@ -158,36 +240,151 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
   }
 
   try {
-    const webhooks = await prisma.webhook.findMany({
-      where: { workspaceId: apiKeyData.workspaceId },
-      orderBy: { createdAt: 'desc' },
+    const webhooks = await listWebhooksWithStats(apiKeyData.workspaceId);
+    res.json({ success: true, webhooks });
+  } catch (err) {
+    logger.error('Failed to list webhooks:', err);
+    res.status(500).json({ success: false, error: 'Failed to retrieve webhooks.' });
+  }
+});
+
+// ─── PATCH /webhooks/:id ──────────────────────────────────────────────────────
+// Body: { url?: string, events?: string[], active?: boolean }
+
+router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params;
+  const workspaceId = (req as any).apiKeyData?.workspaceId as string | undefined;
+  if (!workspaceId) {
+    res.status(400).json({
+      success: false,
+      error: 'This API key is not linked to a workspace. Cannot update webhooks.',
+    });
+    return;
+  }
+
+  const { url, events, active } = req.body as {
+    url?: string;
+    events?: string[];
+    active?: boolean;
+  };
+
+  if (url === undefined && events === undefined && active === undefined) {
+    res.status(400).json({
+      success: false,
+      error: 'Provide at least one of: url, events, active.',
+    });
+    return;
+  }
+
+  if (url !== undefined) {
+    if (typeof url !== 'string') {
+      res.status(400).json({ success: false, error: 'url must be a string.' });
+      return;
+    }
+    try {
+      new URL(url);
+    } catch {
+      res.status(400).json({ success: false, error: 'url must be a valid URL.' });
+      return;
+    }
+  }
+
+  if (events !== undefined && !isValidWebhookEvents(events)) {
+    const invalidEvents = Array.isArray(events)
+      ? events.filter((event) => !(VALID_EVENTS as readonly string[]).includes(event))
+      : [];
+    res.status(400).json({
+      success: false,
+      error: invalidEvents.length > 0
+        ? `Unknown events: ${invalidEvents.join(', ')}. Valid: ${VALID_EVENTS.join(', ')}`
+        : 'events must be a non-empty array.',
+    });
+    return;
+  }
+
+  if (active !== undefined && typeof active !== 'boolean') {
+    res.status(400).json({ success: false, error: 'active must be a boolean.' });
+    return;
+  }
+
+  try {
+    const webhook = await prisma.webhook.findFirst({
+      where: { id, workspaceId },
+      select: { id: true },
+    });
+    if (!webhook) {
+      res.status(404).json({ success: false, error: 'Webhook not found.' });
+      return;
+    }
+
+    const updatedWebhook = await prisma.webhook.update({
+      where: { id },
+      data: {
+        ...(url !== undefined ? { url } : {}),
+        ...(events !== undefined ? { events: events as WebhookEvent[] } : {}),
+        ...(active !== undefined ? { active } : {}),
+      },
       select: {
         id: true,
         url: true,
         events: true,
         active: true,
-        apiKeyIds: true,
         createdAt: true,
-        deliveries: { select: { success: true } },
       },
     });
 
-    const result = webhooks.map(({ deliveries, ...w }) => {
-      const total = deliveries.length;
-      const succeeded = deliveries.filter((d) => d.success).length;
-      return {
-        ...w,
-        stats: {
-          totalDeliveries: total,
-          successRate: total > 0 ? Math.round((succeeded / total) * 100) : null,
-        },
-      };
+    res.json({ success: true, webhook: updatedWebhook });
+  } catch (err) {
+    logger.error('Failed to update webhook:', err);
+    res.status(500).json({ success: false, error: 'Failed to update webhook.' });
+  }
+});
+
+// ─── POST /webhooks/:id/rotate-secret ─────────────────────────────────────────
+
+router.post('/:id/rotate-secret', async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params;
+  const workspaceId = (req as any).apiKeyData?.workspaceId as string | undefined;
+  if (!workspaceId) {
+    res.status(400).json({
+      success: false,
+      error: 'This API key is not linked to a workspace. Cannot rotate webhook secrets.',
+    });
+    return;
+  }
+
+  try {
+    const webhook = await prisma.webhook.findFirst({
+      where: { id, workspaceId },
+      select: { id: true },
+    });
+    if (!webhook) {
+      res.status(404).json({ success: false, error: 'Webhook not found.' });
+      return;
+    }
+
+    const rawSecret = crypto.randomBytes(32).toString('hex');
+    const updatedWebhook = await prisma.webhook.update({
+      where: { id },
+      data: { signingSecret: rawSecret },
+      select: {
+        id: true,
+        url: true,
+        events: true,
+        active: true,
+        createdAt: true,
+      },
     });
 
-    res.json({ success: true, webhooks: result });
+    res.json({
+      success: true,
+      webhook: updatedWebhook,
+      secret: rawSecret,
+      note: 'Store this new secret securely. Previous signatures will stop validating with the old secret.',
+    });
   } catch (err) {
-    logger.error('Failed to list webhooks:', err);
-    res.status(500).json({ success: false, error: 'Failed to retrieve webhooks.' });
+    logger.error('Failed to rotate webhook secret:', err);
+    res.status(500).json({ success: false, error: 'Failed to rotate webhook secret.' });
   }
 });
 
@@ -237,9 +434,18 @@ router.get('/:id/deliveries', async (req: Request, res: Response): Promise<void>
         take: limit,
         select: {
           id: true,
+          event: true,
           statusCode: true,
           success: true,
+          status: true,
           attempts: true,
+          maxAttempts: true,
+          lastError: true,
+          nextRetryAt: true,
+          deliveredAt: true,
+          replayOfDeliveryId: true,
+          resolvedByReplayId: true,
+          resolvedAt: true,
           createdAt: true,
         },
       }),
@@ -280,24 +486,25 @@ router.post(
 
       const delivery = await prisma.webhookDelivery.findFirst({
         where: { id: deliveryId, webhookId: id },
-        select: { id: true, payload: true, success: true },
+        select: { id: true, success: true, status: true },
       });
       if (!delivery) {
         res.status(404).json({ success: false, error: 'Delivery record not found.' });
         return;
       }
+      if (delivery.success) {
+        res.status(400).json({ success: false, error: 'Successful deliveries cannot be replayed.' });
+        return;
+      }
 
-      // Fire async — don't wait for the result
-      fireRegisteredWebhook(
-        webhook.id,
-        webhook.signingSecret,
-        webhook.url,
-        delivery.payload as Record<string, unknown>,
-      );
+      const replay = await replayWebhookDelivery(webhook.id, delivery.id);
 
       res.json({
         success: true,
-        message: 'Retry enqueued. A new delivery attempt is in progress.',
+        replayDeliveryId: replay.deliveryId,
+        message: delivery.status === 'DEAD_LETTER'
+          ? 'Replay enqueued from dead letter.'
+          : 'Retry enqueued. A new delivery attempt is in progress.',
       });
     } catch (err) {
       logger.error('Failed to retry webhook delivery:', err);

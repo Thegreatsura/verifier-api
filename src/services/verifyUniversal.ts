@@ -6,7 +6,7 @@
  *   - POST /verify-batch  (verifyBatch.ts)
  *
  * Returns a plain result object instead of writing to a response, so it can be
- * reused in any context (HTTP handler, batch loop, checkout confirm, etc.).
+ * reused in any context (HTTP handler, batch loop, payment link confirm, etc.).
  */
 
 import { verifyCBE } from './verifyCBE';
@@ -15,6 +15,7 @@ import { verifyDashen } from './verifyDashen';
 import { verifyAbyssinia } from './verifyAbyssinia';
 import { verifyCBEBirr } from './verifyCBEBirr';
 import logger from '../utils/logger';
+import { extractLegacyCbeUrlData, isNewCbeReference } from '../utils/cbeReference';
 
 export interface SmartVerifyInput {
   reference: string;
@@ -50,21 +51,32 @@ export interface SmartVerifyResult {
   httpStatus: number;
 }
 
-function isNewCBEReference(reference: string): boolean {
-  return (
-    /^https?:\/\/mbreciept\.cbe\.com\.et\/[A-Za-z0-9]+\/?$/i.test(reference) ||
-    (!reference.toUpperCase().startsWith('FT') && /^[A-Za-z0-9]{15,25}$/.test(reference))
-  );
+function toFailedProviderResult(
+  provider: SmartVerifyProvider,
+  result: unknown,
+): SmartVerifyResult | null {
+  if (!result || typeof result !== 'object') return null;
+
+  const maybeFailure = result as { success?: boolean; error?: string; statusCode?: number };
+  if (maybeFailure.success !== false) return null;
+
+  return {
+    success: false,
+    error: maybeFailure.error ?? 'Verification failed.',
+    httpStatus: maybeFailure.statusCode ?? 422,
+    provider,
+  };
 }
 
 export async function runSmartVerify(input: SmartVerifyInput): Promise<SmartVerifyResult> {
   const { suffix, phoneNumber, apiKey } = input;
   const trimmedRef = input.reference.trim();
   const len = trimmedRef.length;
-  const isNewCBE = isNewCBEReference(trimmedRef);
+  const isNewCBE = isNewCbeReference(trimmedRef);
+  const legacyCbeLink = extractLegacyCbeUrlData(trimmedRef);
 
   // ── Basic length check ──────────────────────────────────────────────────────
-  if (!isNewCBE && len !== 10 && len !== 12 && len !== 16) {
+  if (!isNewCBE && !legacyCbeLink && len !== 10 && len !== 12 && len !== 16) {
     return {
       success: false,
       error: 'Invalid reference length for automatic sorting.',
@@ -84,7 +96,35 @@ export async function runSmartVerify(input: SmartVerifyInput): Promise<SmartVeri
         };
       }
       const result = await verifyDashen(trimmedRef);
+      const failure = toFailedProviderResult('DASHEN', result);
+      if (failure) return failure;
       return { success: true, data: result, httpStatus: 200, provider: 'DASHEN' };
+    }
+
+    // ── Legacy CBE receipt URL (contains FT reference + embedded suffix) ─────
+    if (legacyCbeLink) {
+      if (phoneNumber) {
+        return {
+          success: false,
+          error: 'Legacy CBE receipt links do not use phoneNumber.',
+          httpStatus: 400,
+          provider: 'CBE',
+        };
+      }
+
+      if (suffix && suffix.trim().length !== 8) {
+        return {
+          success: false,
+          error: 'CBE suffix must be exactly 8 digits when provided.',
+          httpStatus: 400,
+          provider: 'CBE',
+        };
+      }
+
+      const result = await verifyCBE(trimmedRef, suffix?.trim());
+      const failure = toFailedProviderResult('CBE', result);
+      if (failure) return failure;
+      return { success: true, data: result, httpStatus: 200, provider: 'CBE' };
     }
 
     // ── CBE & Abyssinia (12 chars, starts with "FT") ───────────────────────────
@@ -99,9 +139,13 @@ export async function runSmartVerify(input: SmartVerifyInput): Promise<SmartVeri
       const trimmedSuffix = suffix.trim();
       if (trimmedSuffix.length === 8) {
         const result = await verifyCBE(trimmedRef, trimmedSuffix);
+        const failure = toFailedProviderResult('CBE', result);
+        if (failure) return failure;
         return { success: true, data: result, httpStatus: 200, provider: 'CBE' };
       } else if (trimmedSuffix.length === 5) {
         const result = await verifyAbyssinia(trimmedRef, trimmedSuffix);
+        const failure = toFailedProviderResult('ABYSSINIA', result);
+        if (failure) return failure;
         return { success: true, data: result, httpStatus: 200, provider: 'ABYSSINIA' };
       } else {
         return {
@@ -123,6 +167,8 @@ export async function runSmartVerify(input: SmartVerifyInput): Promise<SmartVeri
         };
       }
       const result = await verifyCBE(trimmedRef);
+      const failure = toFailedProviderResult('CBE', result);
+      if (failure) return failure;
       return { success: true, data: result, httpStatus: 200, provider: 'CBE' };
     }
 
@@ -162,6 +208,8 @@ export async function runSmartVerify(input: SmartVerifyInput): Promise<SmartVeri
           };
         }
         const result = await verifyCBEBirr(trimmedRef, trimmedPhone, apiKey);
+        const failure = toFailedProviderResult('CBE_BIRR', result);
+        if (failure) return failure;
         return { success: true, data: result, httpStatus: 200, provider: 'CBE_BIRR' };
       } else {
         // Telebirr

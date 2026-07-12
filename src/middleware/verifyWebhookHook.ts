@@ -14,6 +14,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { notifyVerificationWebhooks } from '../utils/notifyVerificationWebhooks';
+import { getWorkspaceContext } from '../utils/workspaceContext';
 
 // Exact paths that trigger webhook firing. /verify-batch deliberately excluded.
 const SINGLE_VERIFY_PATHS = new Set<string>([
@@ -63,15 +64,15 @@ export function verifyWebhookHook(req: Request, res: Response, next: NextFunctio
     }
 
     setImmediate(() => {
-      const apiKeyData = (req as any).apiKeyData;
-      if (!apiKeyData) return;
+      const context = getWorkspaceContext(req);
+      if (!context?.workspace.id) return;
 
       const b = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>;
       const success = b.success === true || (b.success === undefined && res.statusCode === 200);
       const data = (b.data ?? b) as Record<string, unknown>;
 
       void notifyVerificationWebhooks({
-        apiKeyData,
+        workspaceId: context.workspace.id,
         success,
         provider: providerFromPath(req.path) ?? pickString(b.provider, data.provider),
         reference: pickString(req.body?.reference, req.query?.reference, data.reference),

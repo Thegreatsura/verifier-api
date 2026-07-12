@@ -3,7 +3,7 @@
  *
  * Shared helpers for extracting the verified amount + credited account from
  * provider-specific verification responses, and matching the credited account
- * against a merchant's payout account. Used by /checkout/sessions/.../confirm
+ * against a merchant's payout account. Used by /payment-links/.../confirm
  * and /admin/verify-payment (the product purchase flow).
  */
 
@@ -18,6 +18,29 @@ export function normalisePhone(phone: string): string {
   if (d.startsWith('251')) return d;
   if (d.startsWith('09') || d.startsWith('07')) return '251' + d.slice(1);
   return d;
+}
+
+function normaliseCbeMaskToken(value: string): string {
+  return value.replace(/[^A-Za-z0-9*]/g, '').toUpperCase();
+}
+
+export function maskCbeAccount(account: string): string | null {
+  const normalized = account.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  if (normalized.length < 5) return null;
+  return `${normalized[0]}***${normalized.slice(-4)}`;
+}
+
+export function cbeAccountMatches(verifiedAccount: string | null, merchantAccount: string): boolean {
+  if (verifiedAccount === null) return false;
+
+  const normalizedVerified = normaliseCbeMaskToken(verifiedAccount);
+  const canonicalVerified = normalizedVerified.includes('*')
+    ? `${normalizedVerified[0]}***${normalizedVerified.slice(-4)}`
+    : maskCbeAccount(normalizedVerified);
+  const canonicalMerchant = maskCbeAccount(merchantAccount);
+
+  if (!canonicalVerified || !canonicalMerchant) return false;
+  return canonicalVerified === canonicalMerchant;
 }
 
 /** Basic format check — Ethiopian phone or 13–16 digit bank account. */

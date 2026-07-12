@@ -13,39 +13,64 @@ import cbebirrRouter from './routes/verifyCBEBirrRoute';
 import mpesaRouter from './routes/verifyMpesaRoute';
 import universalRouter from './routes/verifyUniversalRoute';
 import batchRouter from './routes/verifyBatch';
-import checkoutRouter from './routes/checkout';
+import paymentLinksRouter from './routes/paymentLinks';
+import payoutsRouter from './routes/payouts';
+import productsRouter from './routes/products';
+import ordersRouter from './routes/orders';
 import webhooksRouter from './routes/webhooks';
+import notificationsRouter from './routes/notifications';
 import adminRouter from './routes/adminRoute';
 import logger from './utils/logger';
 import { verifyImageHandler } from "./services/verifyImage";
 import { requestLogger, initializeStatsCache } from './middleware/requestLogger';
 import { apiKeyAuth } from './middleware/apiKeyAuth';
 import { rateLimiter } from './middleware/rateLimiter';
-import { verifyImageGate, permissionGate } from './middleware/tierGate';
+import { verifyImageGate, permissionGate, verifyQuotaGate } from './middleware/tierGate';
 import { verifyWebhookHook } from './middleware/verifyWebhookHook';
+import { getWebhookQueueHealth, startWebhookQueueWorker, stopWebhookQueueWorker } from './queues/webhookQueue';
+import { getNotificationQueueHealth, startNotificationQueueWorker, stopNotificationQueueWorker } from './queues/notificationQueue';
 import { prisma, disconnectPrisma } from './utils/prisma';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+let server: ReturnType<typeof app.listen> | null = null;
+
+const startupState = {
+    initializing: true,
+    ready: false,
+    initializedAt: null as string | null,
+    lastError: null as string | null,
+};
 
 // Add environment info to startup log
 logger.info(`Starting server in ${process.env.NODE_ENV || 'development'} mode`);
 logger.info(`Node version: ${process.version}`);
 logger.info(`Platform: ${process.platform}`);
 
-// Initialize database connection and cache
-(async () => {
+async function initializeRuntime(): Promise<void> {
+    startupState.initializing = true;
+    startupState.ready = false;
+    startupState.lastError = null;
+
     try {
-        // Test database connection
         await prisma.$connect();
+        await prisma.$queryRaw`SELECT 1`;
         logger.info('Connected to database successfully');
 
-        // Initialize stats cache from database
         await initializeStatsCache();
+        await startWebhookQueueWorker();
+        await startNotificationQueueWorker();
+
+        startupState.initializing = false;
+        startupState.ready = true;
+        startupState.initializedAt = new Date().toISOString();
     } catch (error) {
-        logger.error('Failed to initialize database connection or stats cache. Starting server anyway...', error);
+        startupState.initializing = false;
+        startupState.ready = false;
+        startupState.lastError = error instanceof Error ? error.message : 'Unknown startup error';
+        throw error;
     }
-})();
+}
 
 app.use(cors());
 app.use(express.json());
@@ -74,6 +99,16 @@ app.use('/verify-cbebirr', rateLimiter);
 app.use('/verify-mpesa', rateLimiter);
 app.use('/verify-image', rateLimiter);
 
+// Monthly verification quotas (separate from per-minute rate limits)
+app.use('/verify-batch', verifyQuotaGate);
+app.use('/verify', verifyQuotaGate);
+app.use('/verify-cbe', verifyQuotaGate);
+app.use('/verify-telebirr', verifyQuotaGate);
+app.use('/verify-dashen', verifyQuotaGate);
+app.use('/verify-abyssinia', verifyQuotaGate);
+app.use('/verify-cbebirr', verifyQuotaGate);
+app.use('/verify-mpesa', verifyQuotaGate);
+
 // Error handling for JSON parsing - properly typed as an error handler
 const jsonErrorHandler: ErrorRequestHandler = async (err, req, res, next): Promise<void> => {
     if (err instanceof SyntaxError && 'body' in err) {
@@ -96,13 +131,83 @@ app.use('/verify-mpesa', mpesaRouter);
 app.post('/verify-image', verifyImageGate, verifyImageHandler);
 app.use('/verify-batch', permissionGate('verify-batch'), batchRouter);
 app.use('/verify', universalRouter);
-app.use('/checkout', permissionGate('webhooks'), checkoutRouter);   // checkout is a PRO+ feature
+app.use('/products', permissionGate('webhooks'), productsRouter);
+app.use('/orders', permissionGate('webhooks'), ordersRouter);
+app.use('/payouts', permissionGate('webhooks'), payoutsRouter);
+app.use('/payment-links', permissionGate('webhooks'), paymentLinksRouter);
 app.use('/webhooks', permissionGate('webhooks'), webhooksRouter);
+app.use('/notifications', permissionGate('webhooks'), notificationsRouter);
 
 
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.json({
+        status: 'ok',
+        uptimeSeconds: Math.round(process.uptime()),
+        timestamp: new Date().toISOString(),
+    });
+});
+
+app.get('/ready', async (req: Request, res: Response) => {
+    const timestamp = new Date().toISOString();
+
+    const checks = {
+        startup: {
+            initializing: startupState.initializing,
+            ready: startupState.ready,
+            initializedAt: startupState.initializedAt,
+            lastError: startupState.lastError,
+        },
+        database: {
+            ready: false,
+            error: null as string | null,
+        },
+        webhookQueue: {
+            ready: false,
+            data: null as Awaited<ReturnType<typeof getWebhookQueueHealth>> | null,
+            error: null as string | null,
+        },
+        notificationQueue: {
+            ready: false,
+            data: null as Awaited<ReturnType<typeof getNotificationQueueHealth>> | null,
+            error: null as string | null,
+        },
+    };
+
+    try {
+        await prisma.$queryRaw`SELECT 1`;
+        checks.database.ready = true;
+    } catch (error) {
+        checks.database.error = error instanceof Error ? error.message : 'Database readiness check failed.';
+    }
+
+    try {
+        const webhookQueue = await getWebhookQueueHealth();
+        checks.webhookQueue.data = webhookQueue;
+        checks.webhookQueue.ready = webhookQueue.configured && webhookQueue.workerRunning && webhookQueue.workerConnected;
+    } catch (error) {
+        checks.webhookQueue.error = error instanceof Error ? error.message : 'Webhook queue readiness check failed.';
+    }
+
+    try {
+        const notificationQueue = await getNotificationQueueHealth();
+        checks.notificationQueue.data = notificationQueue;
+        checks.notificationQueue.ready = notificationQueue.configured && notificationQueue.workerRunning && notificationQueue.workerConnected;
+    } catch (error) {
+        checks.notificationQueue.error = error instanceof Error ? error.message : 'Notification queue readiness check failed.';
+    }
+
+    const ready =
+        checks.startup.ready
+        && checks.database.ready
+        && checks.webhookQueue.ready
+        && checks.notificationQueue.ready;
+
+    res.status(ready ? 200 : 503).json({
+        ready,
+        timestamp,
+        checks,
+    });
 });
 
 // Root endpoint
@@ -118,7 +223,11 @@ app.get('/', (req: Request, res: Response) => {
             '/verify-cbebirr',
             '/verify-mpesa',
             '/verify',
-            '/verify-image'
+            '/verify-image',
+            '/products',
+            '/orders',
+            '/payment-links',
+            '/notifications'
         ]
     });
 });
@@ -129,16 +238,21 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     res.status(500).json({ success: false, error: 'Internal server error' });
 });
 
-// Start the server
-const server = app.listen(PORT, () => {
-    logger.info(`Server running on port ${PORT}`);
-});
-
 // Graceful shutdown
 const gracefulShutdown = async () => {
     logger.info('Shutting down server...');
+    if (!server) {
+        await stopWebhookQueueWorker();
+        await stopNotificationQueueWorker();
+        await disconnectPrisma();
+        process.exit(0);
+        return;
+    }
+
     server.close(async () => {
         logger.info('HTTP server closed');
+        await stopWebhookQueueWorker();
+        await stopNotificationQueueWorker();
         await disconnectPrisma();
         process.exit(0);
     });
@@ -153,3 +267,21 @@ const gracefulShutdown = async () => {
 // Listen for termination signals
 process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
+
+async function bootstrap(): Promise<void> {
+    try {
+        await initializeRuntime();
+
+        server = app.listen(PORT, () => {
+            logger.info(`Server running on port ${PORT}`);
+        });
+    } catch (error) {
+        logger.error('Startup failed. Exiting before accepting traffic.', error);
+        await stopWebhookQueueWorker().catch(() => undefined);
+        await stopNotificationQueueWorker().catch(() => undefined);
+        await disconnectPrisma().catch(() => undefined);
+        process.exit(1);
+    }
+}
+
+void bootstrap();

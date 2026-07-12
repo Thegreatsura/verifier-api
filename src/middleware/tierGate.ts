@@ -1,33 +1,184 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
+import { getWorkspaceContext } from '../utils/workspaceContext';
+import { addMonths, getMonthlyImageCredits, getVerificationMonthlyQuota, type WorkspaceTier } from '../config/plans';
+import { getBillingConfig } from '../config/billingConfig';
 
 const APP_URL = process.env.VERITAS_APP_URL ?? 'https://veritas.et';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Resolve the effective plan data for a request from the owning workspace.
+ * Resolve the effective plan data for a request from workspace context.
  */
-function resolveAccount(apiKeyData: any): {
-  tier: string;
+function resolveAccount(req: Request): {
+  tier: WorkspaceTier;
   grandfathered: boolean;
+  verificationCredits: number;
+  verificationCreditsMonthly: number;
+  verificationCreditsResetAt: Date | null;
+  paidUntil: Date | null;
+  planTermMonths: number | null;
   imageCredits: number;
   imageCreditsMonthly: number;
   imageCreditsResetAt: Date | null;
   creditHolder: 'workspace';
   creditHolderId: string;
 } {
+  const context = getWorkspaceContext(req);
+  if (context) {
+    return {
+      tier: context.workspace.tier,
+      grandfathered: context.workspace.grandfathered,
+      verificationCredits: context.workspace.verificationCredits,
+      verificationCreditsMonthly: context.workspace.verificationCreditsMonthly,
+      verificationCreditsResetAt: context.workspace.verificationCreditsResetAt,
+      paidUntil: context.workspace.paidUntil,
+      planTermMonths: context.workspace.planTermMonths,
+      imageCredits: context.workspace.imageCredits,
+      imageCreditsMonthly: context.workspace.imageCreditsMonthly,
+      imageCreditsResetAt: context.workspace.imageCreditsResetAt,
+      creditHolder: 'workspace',
+      creditHolderId: context.workspace.id,
+    };
+  }
+  
+  // Fallback for backward compatibility
+  const apiKeyData = (req as any).apiKeyData;
   const ws = apiKeyData?.workspace;
   return {
     tier: ws?.tier ?? 'FREE',
     grandfathered: ws?.grandfathered ?? false,
+    verificationCredits: ws?.verificationCredits ?? 0,
+    verificationCreditsMonthly: ws?.verificationCreditsMonthly ?? 0,
+    verificationCreditsResetAt: ws?.verificationCreditsResetAt ?? null,
+    paidUntil: ws?.paidUntil ?? null,
+    planTermMonths: ws?.planTermMonths ?? null,
     imageCredits: ws?.imageCredits ?? 0,
     imageCreditsMonthly: ws?.imageCreditsMonthly ?? 0,
     imageCreditsResetAt: ws?.imageCreditsResetAt ?? null,
     creditHolder: 'workspace',
     creditHolderId: ws?.id ?? apiKeyData?.workspaceId ?? '',
   };
+}
+
+async function syncWorkspacePlanState(
+  account: ReturnType<typeof resolveAccount>,
+): Promise<void> {
+  const now = new Date();
+  const billingConfig = await getBillingConfig();
+  const freeQuota = getVerificationMonthlyQuota('FREE', account.grandfathered, billingConfig);
+
+  if (account.tier !== 'FREE' && account.paidUntil && now >= account.paidUntil) {
+    const downgraded = await prisma.workspace.update({
+      where: { id: account.creditHolderId },
+      data: {
+        tier: 'FREE',
+        paidUntil: null,
+        planTermMonths: null,
+        verificationCredits: freeQuota,
+        verificationCreditsMonthly: freeQuota,
+        verificationCreditsResetAt: addMonths(now, 1),
+        imageCreditsMonthly: 0,
+        imageCreditsResetAt: null,
+      },
+      select: {
+        tier: true,
+        paidUntil: true,
+        planTermMonths: true,
+        verificationCredits: true,
+        verificationCreditsMonthly: true,
+        verificationCreditsResetAt: true,
+        imageCreditsMonthly: true,
+        imageCreditsResetAt: true,
+      },
+    });
+
+    account.tier = downgraded.tier;
+    account.paidUntil = downgraded.paidUntil;
+    account.planTermMonths = downgraded.planTermMonths;
+    account.verificationCredits = downgraded.verificationCredits;
+    account.verificationCreditsMonthly = downgraded.verificationCreditsMonthly;
+    account.verificationCreditsResetAt = downgraded.verificationCreditsResetAt;
+    account.imageCreditsMonthly = downgraded.imageCreditsMonthly;
+    account.imageCreditsResetAt = downgraded.imageCreditsResetAt;
+  }
+
+  const expectedVerificationQuota = getVerificationMonthlyQuota(account.tier, account.grandfathered, billingConfig);
+  if (account.verificationCreditsMonthly <= 0 || !account.verificationCreditsResetAt) {
+    const initialized = await prisma.workspace.update({
+      where: { id: account.creditHolderId },
+      data: {
+        verificationCreditsMonthly: expectedVerificationQuota,
+        verificationCredits: account.verificationCredits > 0 ? account.verificationCredits : expectedVerificationQuota,
+        verificationCreditsResetAt: addMonths(now, 1),
+      },
+      select: {
+        verificationCredits: true,
+        verificationCreditsMonthly: true,
+        verificationCreditsResetAt: true,
+      },
+    });
+
+    account.verificationCredits = initialized.verificationCredits;
+    account.verificationCreditsMonthly = initialized.verificationCreditsMonthly;
+    account.verificationCreditsResetAt = initialized.verificationCreditsResetAt;
+  } else if (now >= account.verificationCreditsResetAt) {
+    const reset = await prisma.workspace.update({
+      where: { id: account.creditHolderId },
+      data: {
+        verificationCredits: account.verificationCreditsMonthly,
+        verificationCreditsResetAt: addMonths(now, 1),
+      },
+      select: {
+        verificationCredits: true,
+        verificationCreditsResetAt: true,
+      },
+    });
+
+    account.verificationCredits = reset.verificationCredits;
+    account.verificationCreditsResetAt = reset.verificationCreditsResetAt;
+  }
+
+  if (account.tier !== 'FREE' && account.imageCreditsMonthly <= 0) {
+    const monthlyImageCredits = getMonthlyImageCredits(account.tier);
+    const refreshed = await prisma.workspace.update({
+      where: { id: account.creditHolderId },
+      data: {
+        imageCreditsMonthly: monthlyImageCredits,
+        imageCredits: { increment: monthlyImageCredits },
+        imageCreditsResetAt: addMonths(now, 1),
+      },
+      select: {
+        imageCredits: true,
+        imageCreditsMonthly: true,
+        imageCreditsResetAt: true,
+      },
+    });
+
+    account.imageCredits = refreshed.imageCredits;
+    account.imageCreditsMonthly = refreshed.imageCreditsMonthly;
+    account.imageCreditsResetAt = refreshed.imageCreditsResetAt;
+  }
+}
+
+function getVerificationUnits(req: Request): number | null {
+  const routeBase = req.baseUrl;
+
+  if (routeBase === '/verify-batch') {
+    const references = req.body?.references;
+    if (!Array.isArray(references) || references.length === 0 || references.length > 20) {
+      return null;
+    }
+    return references.length;
+  }
+
+  if (req.method === 'GET') {
+    return typeof req.query.reference === 'string' && req.query.reference.trim().length > 0 ? 1 : null;
+  }
+
+  return typeof req.body?.reference === 'string' && req.body.reference.trim().length > 0 ? 1 : null;
 }
 
 /**
@@ -49,8 +200,21 @@ function parsePermissions(apiKeyData: any): string[] {
   return ['verify']; // Safe default
 }
 
-function hasPermission(apiKeyData: any, permission: string): boolean {
-  return parsePermissions(apiKeyData).includes(permission);
+function hasPermission(req: Request, permission: string): boolean {
+  const apiKeyData = (req as any).apiKeyData;
+  const context = getWorkspaceContext(req);
+  
+  // Dashboard auth has no API key, so it has all permissions of the workspace
+  if (context?.source === 'dashboard') {
+    return true;
+  }
+  
+  // Traditional API key auth checks key permissions
+  if (apiKeyData) {
+    return parsePermissions(apiKeyData).includes(permission);
+  }
+  
+  return false;
 }
 
 // ─── Permission gate ──────────────────────────────────────────────────────────
@@ -70,14 +234,16 @@ function hasPermission(apiKeyData: any, permission: string): boolean {
 // an active paid plan.
 
 export const permissionGate = (permission: string) =>
-  (req: Request, res: Response, next: NextFunction): void => {
-    const apiKeyData = (req as any).apiKeyData;
-    if (!apiKeyData) { next(); return; }
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const context = getWorkspaceContext(req);
+    if (!context) { next(); return; }
+
+    const account = resolveAccount(req);
+    await syncWorkspacePlanState(account);
 
     // ── 1. Tier ceiling (premium endpoints only) ─────────────────────────────
     if (permission !== 'verify') {
-      const { tier } = resolveAccount(apiKeyData);
-      if (tier === 'FREE') {
+      if (account.tier === 'FREE') {
         res.status(402).json({
           success: false,
           error: 'This feature requires a Pro or Business plan.',
@@ -87,8 +253,10 @@ export const permissionGate = (permission: string) =>
       }
     }
 
-    // ── 2. Key permission ────────────────────────────────────────────────────
-    if (!hasPermission(apiKeyData, permission)) {
+    // ── 2. Permission check ──────────────────────────────────────────────────
+    // Dashboard auth has all permissions, API key auth checks key permissions
+    const apiKeyData = (req as any).apiKeyData;
+    if (context.source === 'api_key' && !hasPermission(req, permission)) {
       res.status(403).json({
         success: false,
         error: `This API key does not have the '${permission}' permission. ` +
@@ -121,10 +289,11 @@ export const verifyImageGate = async (
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
-  const apiKeyData = (req as any).apiKeyData;
-  if (!apiKeyData) { next(); return; }
+  const context = getWorkspaceContext(req);
+  if (!context) { next(); return; }
 
-  const account = resolveAccount(apiKeyData);
+  const account = resolveAccount(req);
+  await syncWorkspacePlanState(account);
 
   // ── 1. Tier ceiling ────────────────────────────────────────────────────────
   // FREE users cannot use image verification, period. No wildcard bypass.
@@ -137,8 +306,10 @@ export const verifyImageGate = async (
     return;
   }
 
-  // ── 2. Key permission ──────────────────────────────────────────────────────
-  if (!hasPermission(apiKeyData, 'verify-image')) {
+  // ── 2. Permission check ──────────────────────────────────────────────────
+  // Dashboard auth has all permissions, API key auth checks key permissions
+  const apiKeyData = (req as any).apiKeyData;
+  if (context.source === 'api_key' && !hasPermission(req, 'verify-image')) {
     res.status(403).json({
       success: false,
       error: "This API key does not have the 'verify-image' permission.",
@@ -191,5 +362,53 @@ export const verifyImageGate = async (
 
   // Pass resolved account to verifyImage.ts so it knows where to decrement
   (req as any).resolvedAccount = account;
+  next();
+};
+
+export const verifyQuotaGate = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  const context = getWorkspaceContext(req);
+  if (!context) { next(); return; }
+
+  const units = getVerificationUnits(req);
+  if (!units || units <= 0) {
+    next();
+    return;
+  }
+
+  const account = resolveAccount(req);
+  await syncWorkspacePlanState(account);
+
+  if (account.verificationCredits < units) {
+    res.status(402).json({
+      success: false,
+      error: `Monthly verification quota reached. ${account.verificationCredits} verification${account.verificationCredits === 1 ? '' : 's'} left.`,
+      upgrade: `${APP_URL}/dashboard/billing`,
+    });
+    return;
+  }
+
+  const updated = await prisma.workspace.updateMany({
+    where: {
+      id: account.creditHolderId,
+      verificationCredits: { gte: units },
+    },
+    data: {
+      verificationCredits: { decrement: units },
+    },
+  });
+
+  if (updated.count === 0) {
+    res.status(402).json({
+      success: false,
+      error: 'Monthly verification quota reached.',
+      upgrade: `${APP_URL}/dashboard/billing`,
+    });
+    return;
+  }
+
   next();
 };

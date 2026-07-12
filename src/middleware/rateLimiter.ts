@@ -1,34 +1,74 @@
 import { Request, Response, NextFunction } from 'express';
+import { getWorkspaceContext } from '../utils/workspaceContext';
+import { RATE_LIMITS, getWorkspacePlanKey } from '../config/plans';
+import { getRequestIp } from '../utils/requestIp';
 
 const WINDOW_MS = 60 * 1000;
-
-// Requests per minute by tier
-const LIMITS: Record<string, number> = {
-  FREE:               10,
-  FREE_GRANDFATHERED: 30,
-  PRO:                60,
-  BUSINESS:           300,
-};
+const PUBLIC_VERIFY_WINDOW_MS = 60 * 60 * 1000;
+const PUBLIC_VERIFY_LIMIT = 6;
 
 const store = new Map<string, { count: number; windowStart: number }>();
 
 export const rateLimiter = (req: Request, res: Response, next: NextFunction): void => {
-  const apiKeyData = (req as any).apiKeyData;
-  if (!apiKeyData) { next(); return; }
+  const context = getWorkspaceContext(req);
+  const requestIp = getRequestIp(req);
 
-  const ws = apiKeyData.workspace;
-  const tier = ws?.tier ?? 'FREE';
-  const grandfathered = ws?.grandfathered ?? false;
+  if (!context) {
+    if (!(req as any).publicVerify) {
+      next();
+      return;
+    }
 
-  const limitKey = tier === 'FREE' && grandfathered ? 'FREE_GRANDFATHERED' : tier;
-  const limit    = LIMITS[limitKey] ?? 10;
+    const rateLimitKey = `public:${requestIp}`;
+    const now = Date.now();
+    const entry = store.get(rateLimitKey);
 
-  const { id } = apiKeyData;
+    if (!entry || now - entry.windowStart >= PUBLIC_VERIFY_WINDOW_MS) {
+      store.set(rateLimitKey, { count: 1, windowStart: now });
+      next();
+      return;
+    }
+
+    entry.count++;
+    if (entry.count > PUBLIC_VERIFY_LIMIT) {
+      const retryAfter = Math.ceil((entry.windowStart + PUBLIC_VERIFY_WINDOW_MS - now) / 1000);
+      res.status(429).json({
+        success: false,
+        error: 'Public verification limit reached. Create a workspace to keep verifying more references.',
+        retryAfter,
+      });
+      return;
+    }
+
+    next();
+    return;
+  }
+
+  const nowDate = new Date();
+  const tier = context.workspace.paidUntil && nowDate >= context.workspace.paidUntil
+    ? 'FREE'
+    : context.workspace.tier;
+  const grandfathered = context.workspace.grandfathered;
+
+  const limitKey = getWorkspacePlanKey(tier, grandfathered);
+  const limit    = RATE_LIMITS[limitKey] ?? RATE_LIMITS.FREE;
+
+  // Determine rate limit key based on auth source
+  let rateLimitKey: string;
+  if (context.source === 'dashboard') {
+    // For dashboard auth, use workspace ID + IP address
+    rateLimitKey = `dashboard:${context.workspace.id}:${requestIp}`;
+  } else {
+    // For API key auth, use API key ID
+    const apiKeyData = (req as any).apiKeyData;
+    rateLimitKey = apiKeyData?.id || 'unknown';
+  }
+
   const now    = Date.now();
-  const entry  = store.get(id);
+  const entry  = store.get(rateLimitKey);
 
   if (!entry || now - entry.windowStart >= WINDOW_MS) {
-    store.set(id, { count: 1, windowStart: now });
+    store.set(rateLimitKey, { count: 1, windowStart: now });
     next();
     return;
   }
