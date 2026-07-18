@@ -18,10 +18,11 @@ import { fireRegisteredWebhook } from '../utils/fireWebhook';
 import { replayWebhookDelivery } from '../queues/webhookQueue';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
+import { getBillingConfig } from '../config/billingConfig';
+import { getWebhookLimit, type WorkspaceTier } from '../config/plans';
 
 const router = Router();
 
-const MAX_WEBHOOKS_PER_WORKSPACE = 20;
 const DELIVERY_PAGE_SIZE = 50;
 
 const VALID_EVENTS = [
@@ -38,6 +39,11 @@ function isValidWebhookEvents(events: unknown): events is WebhookEvent[] {
   return Array.isArray(events)
     && events.length > 0
     && events.every((event) => (VALID_EVENTS as readonly string[]).includes(String(event)));
+}
+
+async function getWorkspaceWebhookLimit(req: Request): Promise<number> {
+  const tier = ((req as any).apiKeyData?.workspace?.tier ?? 'FREE') as WorkspaceTier;
+  return getWebhookLimit(tier, await getBillingConfig());
 }
 
 function buildCountMap(
@@ -193,11 +199,12 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
   }
 
   // ── Per-workspace cap ──────────────────────────────────────────────────────
+  const webhookLimit = await getWorkspaceWebhookLimit(req);
   const count = await prisma.webhook.count({ where: { workspaceId, active: true } });
-  if (count >= MAX_WEBHOOKS_PER_WORKSPACE) {
+  if (count >= webhookLimit) {
     res.status(400).json({
       success: false,
-      error: `Maximum of ${MAX_WEBHOOKS_PER_WORKSPACE} active webhooks per workspace.`,
+      error: `Maximum of ${webhookLimit} active webhooks per workspace.`,
     });
     return;
   }
@@ -310,11 +317,23 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const webhook = await prisma.webhook.findFirst({
       where: { id, workspaceId },
-      select: { id: true },
+      select: { id: true, active: true },
     });
     if (!webhook) {
       res.status(404).json({ success: false, error: 'Webhook not found.' });
       return;
+    }
+
+    if (active === true && !webhook.active) {
+      const webhookLimit = await getWorkspaceWebhookLimit(req);
+      const activeCount = await prisma.webhook.count({ where: { workspaceId, active: true } });
+      if (activeCount >= webhookLimit) {
+        res.status(400).json({
+          success: false,
+          error: `Maximum of ${webhookLimit} active webhooks per workspace.`,
+        });
+        return;
+      }
     }
 
     const updatedWebhook = await prisma.webhook.update({

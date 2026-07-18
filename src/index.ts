@@ -100,6 +100,8 @@ app.use('/verify-mpesa', rateLimiter);
 app.use('/verify-image', rateLimiter);
 
 // Monthly verification quotas (separate from per-minute rate limits)
+// Validate batch entitlement/permissions before any quota is deducted.
+app.use('/verify-batch', permissionGate('verify-batch'));
 app.use('/verify-batch', verifyQuotaGate);
 app.use('/verify', verifyQuotaGate);
 app.use('/verify-cbe', verifyQuotaGate);
@@ -129,7 +131,7 @@ app.use('/verify-abyssinia', abyssiniaRouter);
 app.use('/verify-cbebirr', cbebirrRouter);
 app.use('/verify-mpesa', mpesaRouter);
 app.post('/verify-image', verifyImageGate, verifyImageHandler);
-app.use('/verify-batch', permissionGate('verify-batch'), batchRouter);
+app.use('/verify-batch', batchRouter);
 app.use('/verify', universalRouter);
 app.use('/products', permissionGate('webhooks'), productsRouter);
 app.use('/orders', permissionGate('webhooks'), ordersRouter);

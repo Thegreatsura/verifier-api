@@ -4,9 +4,10 @@ import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
 import { WORKSPACE_EVENTS, type WorkspaceEventName } from '../utils/workspaceEvents';
 import { getWorkspaceContext } from '../utils/workspaceContext';
+import { getBillingConfig } from '../config/billingConfig';
+import { getNotificationChannelLimit, type WorkspaceTier } from '../config/plans';
 
 const router = Router();
-const MAX_NOTIFICATION_CHANNELS_PER_WORKSPACE = 20;
 
 type NotificationChannelType = 'EMAIL' | 'TELEGRAM';
 
@@ -18,6 +19,11 @@ function getWorkspaceId(req: Request): string | null {
 
   const apiKeyData = (req as any).apiKeyData as { workspaceId?: string } | null;
   return apiKeyData?.workspaceId ?? null;
+}
+
+async function getWorkspaceNotificationLimit(req: Request): Promise<number> {
+  const tier = (getWorkspaceContext(req)?.workspace.tier ?? 'FREE') as WorkspaceTier;
+  return getNotificationChannelLimit(tier, await getBillingConfig());
 }
 
 function isValidEvents(events: unknown): events is WorkspaceEventName[] {
@@ -138,13 +144,14 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  const notificationLimit = await getWorkspaceNotificationLimit(req);
   const activeCount = await prisma.notificationChannel.count({
     where: { workspaceId, active: true },
   });
-  if (activeCount >= MAX_NOTIFICATION_CHANNELS_PER_WORKSPACE) {
+  if (activeCount >= notificationLimit) {
     res.status(400).json({
       success: false,
-      error: `Maximum of ${MAX_NOTIFICATION_CHANNELS_PER_WORKSPACE} active notification channels per workspace.`,
+      error: `Maximum of ${notificationLimit} active notification channels per workspace.`,
     });
     return;
   }
@@ -196,7 +203,7 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const existing = await prisma.notificationChannel.findFirst({
       where: { id, workspaceId },
-      select: { id: true, type: true },
+      select: { id: true, type: true, active: true },
     });
 
     if (!existing) {
@@ -204,7 +211,8 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    if (active === true) {
+    if (active === true && !existing.active) {
+      const notificationLimit = await getWorkspaceNotificationLimit(req);
       const activeCount = await prisma.notificationChannel.count({
         where: {
           workspaceId,
@@ -212,10 +220,10 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
           id: { not: id },
         },
       });
-      if (activeCount >= MAX_NOTIFICATION_CHANNELS_PER_WORKSPACE) {
+      if (activeCount >= notificationLimit) {
         res.status(400).json({
           success: false,
-          error: `Maximum of ${MAX_NOTIFICATION_CHANNELS_PER_WORKSPACE} active notification channels per workspace.`,
+          error: `Maximum of ${notificationLimit} active notification channels per workspace.`,
         });
         return;
       }

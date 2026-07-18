@@ -1,9 +1,16 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../utils/prisma';
-import logger from '../utils/logger';
 import { getWorkspaceContext } from '../utils/workspaceContext';
-import { addMonths, getMonthlyImageCredits, getVerificationMonthlyQuota, type WorkspaceTier } from '../config/plans';
-import { getBillingConfig } from '../config/billingConfig';
+import {
+  addMonths,
+  getBatchMaxReferences,
+  getMonthlyImageCredits,
+  getNotificationChannelLimit,
+  getVerificationMonthlyQuota,
+  getWebhookLimit,
+  type WorkspaceTier,
+} from '../config/plans';
+import { getBillingConfig, type BillingConfig } from '../config/billingConfig';
 
 const APP_URL = process.env.VERITAS_APP_URL ?? 'https://veritas.et';
 
@@ -65,10 +72,11 @@ function resolveAccount(req: Request): {
 
 async function syncWorkspacePlanState(
   account: ReturnType<typeof resolveAccount>,
-): Promise<void> {
+): Promise<BillingConfig> {
   const now = new Date();
   const billingConfig = await getBillingConfig();
   const freeQuota = getVerificationMonthlyQuota('FREE', account.grandfathered, billingConfig);
+  const freeImageCredits = getMonthlyImageCredits('FREE', billingConfig);
 
   if (account.tier !== 'FREE' && account.paidUntil && now >= account.paidUntil) {
     const downgraded = await prisma.workspace.update({
@@ -80,8 +88,9 @@ async function syncWorkspacePlanState(
         verificationCredits: freeQuota,
         verificationCreditsMonthly: freeQuota,
         verificationCreditsResetAt: addMonths(now, 1),
-        imageCreditsMonthly: 0,
-        imageCreditsResetAt: null,
+        imageCredits: freeImageCredits,
+        imageCreditsMonthly: freeImageCredits,
+        imageCreditsResetAt: addMonths(now, 1),
       },
       select: {
         tier: true,
@@ -91,6 +100,7 @@ async function syncWorkspacePlanState(
         verificationCreditsMonthly: true,
         verificationCreditsResetAt: true,
         imageCreditsMonthly: true,
+        imageCredits: true,
         imageCreditsResetAt: true,
       },
     });
@@ -102,11 +112,12 @@ async function syncWorkspacePlanState(
     account.verificationCreditsMonthly = downgraded.verificationCreditsMonthly;
     account.verificationCreditsResetAt = downgraded.verificationCreditsResetAt;
     account.imageCreditsMonthly = downgraded.imageCreditsMonthly;
+    account.imageCredits = downgraded.imageCredits;
     account.imageCreditsResetAt = downgraded.imageCreditsResetAt;
   }
 
   const expectedVerificationQuota = getVerificationMonthlyQuota(account.tier, account.grandfathered, billingConfig);
-  if (account.verificationCreditsMonthly <= 0 || !account.verificationCreditsResetAt) {
+  if (!account.verificationCreditsResetAt) {
     const initialized = await prisma.workspace.update({
       where: { id: account.creditHolderId },
       data: {
@@ -128,21 +139,24 @@ async function syncWorkspacePlanState(
     const reset = await prisma.workspace.update({
       where: { id: account.creditHolderId },
       data: {
-        verificationCredits: account.verificationCreditsMonthly,
+        verificationCredits: expectedVerificationQuota,
+        verificationCreditsMonthly: expectedVerificationQuota,
         verificationCreditsResetAt: addMonths(now, 1),
       },
       select: {
         verificationCredits: true,
+        verificationCreditsMonthly: true,
         verificationCreditsResetAt: true,
       },
     });
 
     account.verificationCredits = reset.verificationCredits;
+    account.verificationCreditsMonthly = reset.verificationCreditsMonthly;
     account.verificationCreditsResetAt = reset.verificationCreditsResetAt;
   }
 
-  if (account.tier !== 'FREE' && account.imageCreditsMonthly <= 0) {
-    const monthlyImageCredits = getMonthlyImageCredits(account.tier);
+  const monthlyImageCredits = getMonthlyImageCredits(account.tier, billingConfig);
+  if (!account.imageCreditsResetAt) {
     const refreshed = await prisma.workspace.update({
       where: { id: account.creditHolderId },
       data: {
@@ -160,7 +174,44 @@ async function syncWorkspacePlanState(
     account.imageCredits = refreshed.imageCredits;
     account.imageCreditsMonthly = refreshed.imageCreditsMonthly;
     account.imageCreditsResetAt = refreshed.imageCreditsResetAt;
+  } else if (now >= account.imageCreditsResetAt) {
+    const refreshed = await prisma.workspace.update({
+      where: { id: account.creditHolderId },
+      data: {
+        imageCredits: monthlyImageCredits,
+        imageCreditsMonthly: monthlyImageCredits,
+        imageCreditsResetAt: addMonths(now, 1),
+      },
+      select: {
+        imageCredits: true,
+        imageCreditsMonthly: true,
+        imageCreditsResetAt: true,
+      },
+    });
+
+    account.imageCredits = refreshed.imageCredits;
+    account.imageCreditsMonthly = refreshed.imageCreditsMonthly;
+    account.imageCreditsResetAt = refreshed.imageCreditsResetAt;
   }
+
+  return billingConfig;
+}
+
+async function getSyncedPlanState(req: Request): Promise<{
+  account: ReturnType<typeof resolveAccount>;
+  billingConfig: BillingConfig;
+}> {
+  const cached = (req as any).resolvedPlanState as {
+    account: ReturnType<typeof resolveAccount>;
+    billingConfig: BillingConfig;
+  } | undefined;
+  if (cached) return cached;
+
+  const account = resolveAccount(req);
+  const billingConfig = await syncWorkspacePlanState(account);
+  const state = { account, billingConfig };
+  (req as any).resolvedPlanState = state;
+  return state;
 }
 
 function getVerificationUnits(req: Request): number | null {
@@ -168,7 +219,7 @@ function getVerificationUnits(req: Request): number | null {
 
   if (routeBase === '/verify-batch') {
     const references = req.body?.references;
-    if (!Array.isArray(references) || references.length === 0 || references.length > 20) {
+    if (!Array.isArray(references) || references.length === 0) {
       return null;
     }
     return references.length;
@@ -222,34 +273,36 @@ function hasPermission(req: Request, permission: string): boolean {
 // Usage: app.use('/verify-batch', permissionGate('verify-batch'))
 //
 // Two checks, in order:
-//   1. Tier ceiling — premium endpoints (anything other than 'verify') always
-//      require PRO or BUSINESS, regardless of what the key's permissions array
-//      contains. A FREE user can never use these endpoints, even if their key
-//      somehow has the permission listed (e.g. they were on PRO and downgraded).
+//   1. Plan entitlement — Free defaults to no premium resources, but the shared
+//      plan configuration can explicitly grant batch/webhook/notification use.
 //   2. Key permission — the permissions array must explicitly contain the
 //      required permission. ["*"] is no longer treated as a wildcard.
 //
-// This is the strict model: grandfathered users keep their basic /verify access
-// (since 'verify' is in everyone's permissions), but premium features require
-// an active paid plan.
+// Legacy Free affects only its existing verification quota and 30 rpm rate; it
+// does not bypass permissions or acquire resource entitlements implicitly.
 
 export const permissionGate = (permission: string) =>
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const context = getWorkspaceContext(req);
     if (!context) { next(); return; }
 
-    const account = resolveAccount(req);
-    await syncWorkspacePlanState(account);
+    const { account, billingConfig } = await getSyncedPlanState(req);
 
     // ── 1. Tier ceiling (premium endpoints only) ─────────────────────────────
     if (permission !== 'verify') {
       if (account.tier === 'FREE') {
-        res.status(402).json({
-          success: false,
-          error: 'This feature requires a Pro or Business plan.',
-          upgrade: `${APP_URL}/dashboard/billing`,
-        });
-        return;
+        const configuredForFree =
+          (permission === 'verify-batch' && getBatchMaxReferences('FREE', billingConfig) > 0)
+          || (req.baseUrl === '/webhooks' && getWebhookLimit('FREE', billingConfig) > 0)
+          || (req.baseUrl === '/notifications' && getNotificationChannelLimit('FREE', billingConfig) > 0);
+        if (!configuredForFree) {
+          res.status(402).json({
+            success: false,
+            error: 'This feature is not included in this plan.',
+            upgrade: `${APP_URL}/dashboard/billing`,
+          });
+          return;
+        }
       }
     }
 
@@ -276,10 +329,9 @@ export const proGate = permissionGate('verify-batch');
 //
 // Execution order:
 //   1. Resolve account from workspace
-//   2. Tier check: FREE → 402
+//   2. Configured allocation check
 //   3. Permission check: must have "verify-image"
-//   4. Lazy monthly reset (if reset date passed, restore monthly allocation)
-//   5. Credit balance check: 0 remaining → 402
+//   4. Credit balance check: 0 remaining → 402
 //
 // The actual decrement (balance -= 1) is done atomically in verifyImage.ts
 // AFTER the file is confirmed present, using updateMany + gt:0 guard.
@@ -292,15 +344,14 @@ export const verifyImageGate = async (
   const context = getWorkspaceContext(req);
   if (!context) { next(); return; }
 
-  const account = resolveAccount(req);
-  await syncWorkspacePlanState(account);
+  const { account } = await getSyncedPlanState(req);
 
   // ── 1. Tier ceiling ────────────────────────────────────────────────────────
-  // FREE users cannot use image verification, period. No wildcard bypass.
-  if (account.tier === 'FREE') {
+  // A zero configured allocation disables image verification for the plan.
+  if (account.imageCreditsMonthly <= 0) {
     res.status(402).json({
       success: false,
-      error: 'Image verification requires a Pro or Business plan.',
+      error: 'Image verification is not included in this plan.',
       upgrade: `${APP_URL}/dashboard/billing`,
     });
     return;
@@ -318,39 +369,7 @@ export const verifyImageGate = async (
     return;
   }
 
-  // ── 3. Lazy monthly reset ──────────────────────────────────────────────────
-  const now = new Date();
-  if (account.imageCreditsResetAt && now >= account.imageCreditsResetAt) {
-    try {
-      const nextResetAt = new Date(account.imageCreditsResetAt);
-      nextResetAt.setMonth(nextResetAt.getMonth() + 1);
-
-      const resetData = {
-        imageCredits: account.imageCreditsMonthly,
-        imageCreditsResetAt: nextResetAt,
-      };
-      const select = { imageCredits: true, imageCreditsResetAt: true } as const;
-
-      const refreshed = await prisma.workspace.update({
-        where: { id: account.creditHolderId },
-        data: resetData,
-        select,
-      });
-
-      account.imageCredits = refreshed.imageCredits;
-      account.imageCreditsResetAt = refreshed.imageCreditsResetAt;
-
-      logger.info(
-        `[tierGate] Monthly reset for ${account.creditHolder} ${account.creditHolderId}: ` +
-        `credits restored to ${account.imageCredits}`,
-      );
-    } catch (err) {
-      logger.error(`[tierGate] Monthly reset failed for ${account.creditHolderId}:`, err);
-      // Non-fatal: continue with stale value
-    }
-  }
-
-  // ── 4. Credit balance check ────────────────────────────────────────────────
+  // ── 3. Credit balance check ────────────────────────────────────────────────
   if (account.imageCredits <= 0) {
     res.status(402).json({
       success: false,
@@ -379,8 +398,27 @@ export const verifyQuotaGate = async (
     return;
   }
 
-  const account = resolveAccount(req);
-  await syncWorkspacePlanState(account);
+  const { account, billingConfig } = await getSyncedPlanState(req);
+
+  if (req.baseUrl === '/verify-batch') {
+    const maxReferences = getBatchMaxReferences(account.tier, billingConfig);
+    if (maxReferences <= 0) {
+      next();
+      return;
+    }
+    if (maxReferences > 0 && units > maxReferences) {
+      res.status(400).json({
+        success: false,
+        error: `Batch size exceeds maximum of ${maxReferences} references.`,
+      });
+      return;
+    }
+  }
+
+  if (account.tier === 'BUSINESS' && billingConfig.businessUnlimitedVerifications) {
+    next();
+    return;
+  }
 
   if (account.verificationCredits < units) {
     res.status(402).json({

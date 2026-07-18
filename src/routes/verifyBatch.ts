@@ -3,10 +3,10 @@ import { runSmartVerify } from '../services/verifyUniversal';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
 import { getWorkspaceContext } from '../utils/workspaceContext';
+import { getBillingConfig } from '../config/billingConfig';
+import { getBatchMaxReferences } from '../config/plans';
 
 const router = Router();
-
-const MAX_BATCH = 20;
 
 interface BatchItem {
   reference: string;
@@ -22,12 +22,13 @@ router.post('/', async (req: Request<{}, {}, BatchBody>, res: Response): Promise
   const apiKeyData = (req as any).apiKeyData;
   const workspaceContext = getWorkspaceContext(req);
 
-  // ── Tier gate: PRO and BUSINESS only (ALL FREE workspaces blocked) ──────────
   const workspaceTier = workspaceContext?.workspace.tier ?? 'FREE';
-  if (!workspaceContext || workspaceTier === 'FREE') {
+  const billingConfig = await getBillingConfig();
+  const maxBatch = getBatchMaxReferences(workspaceTier, billingConfig);
+  if (!workspaceContext || maxBatch <= 0) {
     res.status(402).json({
       success: false,
-      error: 'Batch verification requires a Pro or Business plan.',
+      error: 'Batch verification is not included in this plan.',
       upgrade: 'https://veritas.et/dashboard/billing',
     });
     return;
@@ -40,10 +41,10 @@ router.post('/', async (req: Request<{}, {}, BatchBody>, res: Response): Promise
     return;
   }
 
-  if (references.length > MAX_BATCH) {
+  if (references.length > maxBatch) {
     res.status(400).json({
       success: false,
-      error: `Batch size exceeds maximum of ${MAX_BATCH} references.`,
+      error: `Batch size exceeds maximum of ${maxBatch} references.`,
     });
     return;
   }

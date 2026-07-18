@@ -12,6 +12,11 @@ import { verifyMpesa } from '../services/verifyMpesa';
 import { accountMatches, extractPaymentDetails } from '../utils/paymentMatch';
 import { prisma } from '../utils/prisma';
 import logger from '../utils/logger';
+import {
+    BillingConfigValidationError,
+    getBillingConfig,
+    updateBillingConfig,
+} from '../config/billingConfig';
 
 const router = Router();
 
@@ -28,6 +33,29 @@ const checkAdminAuth = (req: Request, res: Response, next: NextFunction) => {
 
     next();
 };
+
+router.get('/billing-config', checkAdminAuth as RequestHandler, async (_req: Request, res: Response): Promise<void> => {
+    try {
+        res.json({ success: true, data: await getBillingConfig() });
+    } catch (err) {
+        logger.error('Failed to read billing configuration:', err);
+        res.status(500).json({ success: false, error: 'Failed to read billing configuration.' });
+    }
+});
+
+router.patch('/billing-config', checkAdminAuth as RequestHandler, async (req: Request, res: Response): Promise<void> => {
+    try {
+        const config = await updateBillingConfig(req.body);
+        res.json({ success: true, data: config });
+    } catch (err) {
+        if (err instanceof BillingConfigValidationError) {
+            res.status(400).json({ success: false, error: err.message, issues: err.issues });
+            return;
+        }
+        logger.error('Failed to update billing configuration:', err);
+        res.status(500).json({ success: false, error: 'Failed to update billing configuration.' });
+    }
+});
 
 // Generate a new API key
 router.post('/api-keys', checkAdminAuth as RequestHandler, async (req: Request, res: Response): Promise<void> => {

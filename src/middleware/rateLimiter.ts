@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { getWorkspaceContext } from '../utils/workspaceContext';
-import { RATE_LIMITS, getWorkspacePlanKey } from '../config/plans';
+import { getRateLimit } from '../config/plans';
+import { getBillingConfig } from '../config/billingConfig';
 import { getRequestIp } from '../utils/requestIp';
 
 const WINDOW_MS = 60 * 1000;
@@ -9,7 +10,7 @@ const PUBLIC_VERIFY_LIMIT = 6;
 
 const store = new Map<string, { count: number; windowStart: number }>();
 
-export const rateLimiter = (req: Request, res: Response, next: NextFunction): void => {
+export const rateLimiter = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   const context = getWorkspaceContext(req);
   const requestIp = getRequestIp(req);
 
@@ -50,8 +51,8 @@ export const rateLimiter = (req: Request, res: Response, next: NextFunction): vo
     : context.workspace.tier;
   const grandfathered = context.workspace.grandfathered;
 
-  const limitKey = getWorkspacePlanKey(tier, grandfathered);
-  const limit    = RATE_LIMITS[limitKey] ?? RATE_LIMITS.FREE;
+  const billingConfig = await getBillingConfig();
+  const limit = getRateLimit(tier, grandfathered, billingConfig);
 
   // Determine rate limit key based on auth source
   let rateLimitKey: string;
