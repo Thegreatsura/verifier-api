@@ -8,7 +8,10 @@
     "build": "prisma generate && tsc",
     "start": "node dist/index.js",
     "migrate-api-keys": "ts-node src/utils/migrateApiKeys.ts",
-    "migrate-keys": "ts-node src/utils/migrate-keys.ts"
+    "migrate-keys": "ts-node src/utils/migrate-keys.ts",
+    "migrate-user-model": "ts-node src/utils/migrateToUserModel.ts",
+    "migrate-webhook-ownership": "ts-node src/utils/migrateWebhookOwnership.ts",
+    "migrate-remove-wildcard": "ts-node src/utils/migrateRemoveWildcard.ts"
   },
   "keywords": [],
   "author": "Leul Zenebe",
@@ -19,6 +22,7 @@
     "@types/multer": "^1.4.12",
     "axios": "^1.9.0",
     "body-parser": "^2.2.0",
+    "bullmq": "^5.78.0",
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
