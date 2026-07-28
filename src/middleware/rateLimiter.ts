@@ -3,6 +3,7 @@ import { getWorkspaceContext } from '../utils/workspaceContext';
 import { getRateLimit } from '../config/plans';
 import { getBillingConfig } from '../config/billingConfig';
 import { getRequestIp } from '../utils/requestIp';
+import { isTrustedBillingPaymentVerification } from '../utils/trustedInternalOperation';
 
 const WINDOW_MS = 60 * 1000;
 const PUBLIC_VERIFY_WINDOW_MS = 60 * 60 * 1000;
@@ -11,6 +12,11 @@ const PUBLIC_VERIFY_LIMIT = 6;
 const store = new Map<string, { count: number; windowStart: number }>();
 
 export const rateLimiter = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  if (isTrustedBillingPaymentVerification(req)) {
+    next();
+    return;
+  }
+
   const context = getWorkspaceContext(req);
   const requestIp = getRequestIp(req);
 

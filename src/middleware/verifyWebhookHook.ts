@@ -15,6 +15,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { notifyVerificationWebhooks } from '../utils/notifyVerificationWebhooks';
 import { getWorkspaceContext } from '../utils/workspaceContext';
+import { isTrustedBillingPaymentVerification } from '../utils/trustedInternalOperation';
 
 // Exact paths that trigger webhook firing. /verify-batch deliberately excluded.
 const SINGLE_VERIFY_PATHS = new Set<string>([
@@ -49,7 +50,10 @@ function providerFromPath(path: string): string | undefined {
 }
 
 export function verifyWebhookHook(req: Request, res: Response, next: NextFunction): void {
-  if (!SINGLE_VERIFY_PATHS.has(req.path)) {
+  if (
+    !SINGLE_VERIFY_PATHS.has(req.path)
+    || isTrustedBillingPaymentVerification(req)
+  ) {
     next();
     return;
   }

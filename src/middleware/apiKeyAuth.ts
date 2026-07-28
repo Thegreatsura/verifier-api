@@ -3,6 +3,11 @@ import crypto from 'crypto';
 import logger from '../utils/logger';
 import { prisma } from '../utils/prisma';
 import { AppError, ErrorType, sendErrorResponse } from '../utils/errorHandler';
+import {
+  BILLING_PAYMENT_OPERATION,
+  INTERNAL_OPERATION_HEADER,
+  markTrustedInternalOperation,
+} from '../utils/trustedInternalOperation';
 
 const ADMIN_SECRET = process.env.ADMIN_SECRET ?? '';
 const DASHBOARD_SECRET = process.env.DASHBOARD_SECRET ?? '';
@@ -97,6 +102,14 @@ export const apiKeyAuth = async (req: Request, res: Response, next: NextFunction
       }
       (req as any).workspaceContext = { workspace, source: 'dashboard' };
       (req as any).apiKeyData = null;
+      const internalOperation = req.headers[INTERNAL_OPERATION_HEADER] as string | undefined;
+      if (
+        internalOperation === BILLING_PAYMENT_OPERATION
+        && req.method === 'POST'
+        && req.path === '/verify'
+      ) {
+        markTrustedInternalOperation(req, BILLING_PAYMENT_OPERATION);
+      }
       return next();
     } catch (error) {
       logger.error('Error looking up workspace for dashboard auth:', error);
