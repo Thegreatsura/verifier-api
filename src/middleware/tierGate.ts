@@ -11,6 +11,7 @@ import {
   type WorkspaceTier,
 } from '../config/plans';
 import { getBillingConfig, type BillingConfig } from '../config/billingConfig';
+import { isTrustedBillingPaymentVerification } from '../utils/trustedInternalOperation';
 
 const APP_URL = process.env.VERITAS_APP_URL ?? 'https://veritas.et';
 
@@ -389,6 +390,11 @@ export const verifyQuotaGate = async (
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
+  if (isTrustedBillingPaymentVerification(req)) {
+    next();
+    return;
+  }
+
   const context = getWorkspaceContext(req);
   if (!context) { next(); return; }
 
