@@ -15,7 +15,6 @@ function isValidEthiopianPhone(phone: string): boolean {
 router.post('/', async (req: Request, res: Response) => {
   try {
     const { receiptNumber, phoneNumber } = req.body;
-    const apiKey = req.headers.authorization?.replace('Bearer ', '') || req.headers['x-api-key'] as string;
 
     // Validate required parameters
     if (!receiptNumber) {
@@ -34,14 +33,6 @@ router.post('/', async (req: Request, res: Response) => {
       return;
     }
 
-    if (!apiKey) {
-      res.status(401).json({
-        success: false,
-        error: 'API key is required in Authorization header or x-api-key header'
-      });
-      return;
-    }
-
     // Validate Ethiopian phone number format
     if (!isValidEthiopianPhone(phoneNumber)) {
       res.status(400).json({
@@ -54,7 +45,7 @@ router.post('/', async (req: Request, res: Response) => {
     logger.info(`[CBEBirr Route] Processing verification request for receipt: ${receiptNumber}, phone: ${phoneNumber}`);
 
     // Call the verification service
-    const result = await verifyCBEBirr(receiptNumber, phoneNumber, apiKey);
+    const result = await verifyCBEBirr(receiptNumber, phoneNumber);
 
     // Return the result
     res.json(result);
@@ -72,7 +63,6 @@ router.post('/', async (req: Request, res: Response) => {
 router.get('/', async (req: Request, res: Response) => {
   try {
     const { receiptNumber, phoneNumber } = req.query;
-    const apiKey = req.headers.authorization?.replace('Bearer ', '') || req.headers['x-api-key'] as string;
 
     // Validate required parameters
     if (!receiptNumber || typeof receiptNumber !== 'string') {
@@ -91,14 +81,6 @@ router.get('/', async (req: Request, res: Response) => {
       return;
     }
 
-    if (!apiKey) {
-      res.status(401).json({
-        success: false,
-        error: 'API key is required in Authorization header or x-api-key header'
-      });
-      return;
-    }
-
     // Validate Ethiopian phone number format
     if (!isValidEthiopianPhone(phoneNumber)) {
       res.status(400).json({
@@ -111,7 +93,7 @@ router.get('/', async (req: Request, res: Response) => {
     logger.info(`[CBEBirr Route] Processing GET verification request for receipt: ${receiptNumber}, phone: ${phoneNumber}`);
 
     // Call the verification service
-    const result = await verifyCBEBirr(receiptNumber, phoneNumber, apiKey);
+    const result = await verifyCBEBirr(receiptNumber, phoneNumber);
 
     // Return the result
     res.json(result);

@@ -2,7 +2,6 @@ import { verifyAbyssinia } from './verifyAbyssinia';
 import { verifyCBE } from './verifyCBE';
 import { verifyCBEBirr } from './verifyCBEBirr';
 import { verifyDashen } from './verifyDashen';
-import { verifyMpesa } from './verifyMpesa';
 import { verifyTelebirr } from './verifyTelebirr';
 import type {
   StatusCapabilities,
@@ -52,18 +51,27 @@ function providerOperation(
       return async () => (await verifyTelebirr(reference)) !== null;
     }
     case 'cbe': {
-      const reference = env.STATUS_PROBE_CBE_REFERENCE;
-      if (!reference?.trim()) return null;
+      const reference =
+        env.STATUS_PROBE_CBE_LEGACY_REFERENCE ??
+        env.STATUS_PROBE_CBE_REFERENCE;
+      const suffix =
+        env.STATUS_PROBE_CBE_LEGACY_ACCOUNT_SUFFIX ??
+        env.STATUS_PROBE_CBE_ACCOUNT_SUFFIX;
+      if (!reference?.trim() || !suffix?.trim()) return null;
       return async () =>
-        (await verifyCBE(reference, env.STATUS_PROBE_CBE_ACCOUNT_SUFFIX)).success;
+        (await verifyCBE(reference, suffix)).success;
+    }
+    case 'cbe-new': {
+      const receiptUrl = env.STATUS_PROBE_CBE_NEW_URL;
+      if (!receiptUrl?.trim()) return null;
+      return async () => (await verifyCBE(receiptUrl)).success;
     }
     case 'cbe-birr': {
       const reference = env.STATUS_PROBE_CBEBIRR_REFERENCE;
       const phone = env.STATUS_PROBE_CBEBIRR_PHONE;
-      const apiKey = env.STATUS_PROBE_CBEBIRR_API_KEY;
-      if (!reference?.trim() || !phone?.trim() || !apiKey?.trim()) return null;
+      if (!reference?.trim() || !phone?.trim()) return null;
       return async () => {
-        const result = await verifyCBEBirr(reference, phone, apiKey);
+        const result = await verifyCBEBirr(reference, phone);
         return !('success' in result) || result.success !== false;
       };
     }
@@ -77,11 +85,6 @@ function providerOperation(
       const suffix = env.STATUS_PROBE_ABYSSINIA_ACCOUNT_SUFFIX;
       if (!reference?.trim() || !suffix?.trim()) return null;
       return async () => (await verifyAbyssinia(reference, suffix)).success;
-    }
-    case 'mpesa': {
-      const reference = env.STATUS_PROBE_MPESA_REFERENCE;
-      if (!reference?.trim()) return null;
-      return async () => (await verifyMpesa(reference)).success;
     }
   }
 }

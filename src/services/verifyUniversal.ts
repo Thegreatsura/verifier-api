@@ -21,7 +21,7 @@ export interface SmartVerifyInput {
   reference: string;
   suffix?: string;
   phoneNumber?: string;
-  /** Raw API key string — required only for CBE Birr verification. */
+  /** Retained for caller compatibility; provider services do not receive it. */
   apiKey?: string;
 }
 
@@ -69,7 +69,7 @@ function toFailedProviderResult(
 }
 
 export async function runSmartVerify(input: SmartVerifyInput): Promise<SmartVerifyResult> {
-  const { suffix, phoneNumber, apiKey } = input;
+  const { suffix, phoneNumber } = input;
   const trimmedRef = input.reference.trim();
   const len = trimmedRef.length;
   const isNewCBE = isNewCbeReference(trimmedRef);
@@ -199,15 +199,7 @@ export async function runSmartVerify(input: SmartVerifyInput): Promise<SmartVeri
             provider: 'CBE_BIRR',
           };
         }
-        if (!apiKey) {
-          return {
-            success: false,
-            error: 'API key is required for CBE Birr verification.',
-            httpStatus: 401,
-            provider: 'CBE_BIRR',
-          };
-        }
-        const result = await verifyCBEBirr(trimmedRef, trimmedPhone, apiKey);
+        const result = await verifyCBEBirr(trimmedRef, trimmedPhone);
         const failure = toFailedProviderResult('CBE_BIRR', result);
         if (failure) return failure;
         return { success: true, data: result, httpStatus: 200, provider: 'CBE_BIRR' };
