@@ -6,6 +6,7 @@ import { WORKSPACE_EVENTS, type WorkspaceEventName } from '../utils/workspaceEve
 import { getWorkspaceContext } from '../utils/workspaceContext';
 import { getBillingConfig } from '../config/billingConfig';
 import { getNotificationChannelLimit, type WorkspaceTier } from '../config/plans';
+import { enqueueNotificationDelivery } from '../queues/notificationQueue';
 
 const router = Router();
 
@@ -181,6 +182,52 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
   } catch (error) {
     logger.error('Failed to create notification channel:', error);
     res.status(500).json({ success: false, error: 'Failed to create notification channel.' });
+  }
+});
+
+router.post('/:id/test', async (req: Request, res: Response): Promise<void> => {
+  const workspaceId = getWorkspaceId(req);
+  const { id } = req.params;
+
+  if (!workspaceId) {
+    res.status(400).json({ success: false, error: 'This workspace could not be resolved.' });
+    return;
+  }
+
+  try {
+    const channel = await prisma.notificationChannel.findFirst({
+      where: { id, workspaceId },
+      select: { id: true, active: true },
+    });
+
+    if (!channel) {
+      res.status(404).json({ success: false, error: 'Notification channel not found.' });
+      return;
+    }
+    if (!channel.active) {
+      res.status(400).json({ success: false, error: 'Cannot test an inactive notification channel.' });
+      return;
+    }
+
+    const queued = await enqueueNotificationDelivery({
+      channelId: channel.id,
+      event: 'notification.test',
+      payload: {
+        event: 'notification.test',
+        firedAt: new Date().toISOString(),
+        test: true,
+        message: 'This is a test delivery from your Veritas dashboard.',
+      },
+    });
+
+    res.json({
+      success: true,
+      deliveryId: queued.deliveryId,
+      message: 'Notification test queued for delivery.',
+    });
+  } catch (error) {
+    logger.error('Failed to queue notification test:', error);
+    res.status(500).json({ success: false, error: 'Failed to queue notification test.' });
   }
 });
 

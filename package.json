@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "nodemon --watch src --exec ts-node src/index.ts",
     "build": "prisma generate && tsc",
+    "test": "pnpm build && node --test dist/tests/statusMonitorSignature.test.js dist/tests/statusProbeService.test.js",
     "start": "node dist/index.js",
     "migrate-api-keys": "ts-node src/utils/migrateApiKeys.ts",
     "migrate-keys": "ts-node src/utils/migrate-keys.ts",

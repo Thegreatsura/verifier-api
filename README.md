@@ -598,3 +598,27 @@ MIT License — see the [LICENSE](./LICENSE) file for details.
 Creofam LLC  
 🌐 [creofam.com](https://creofam.com)  
 🌐 [Personal Site](https://leulzenebe.pro)
+# Internal status probes
+
+`GET /internal/status/capabilities` and
+`POST /internal/status/probe/:provider` are reserved for the independent
+Veritas status monitor. Requests require the timestamped HMAC headers described
+in `veritas-status/docs/VERIFIER_API_STATUS_HANDOFF.md` and bypass customer API
+keys, quotas, verification records, usage records, webhooks, and notifications.
+Provider-service logs are request-scoped and redacted during these probes.
+
+Configure production values outside Git:
+
+```text
+STATUS_MONITOR_SECRET
+STATUS_PROBE_TELEBIRR_REFERENCE
+STATUS_PROBE_CBE_REFERENCE
+STATUS_PROBE_CBE_ACCOUNT_SUFFIX
+STATUS_PROBE_CBEBIRR_REFERENCE
+STATUS_PROBE_CBEBIRR_PHONE
+STATUS_PROBE_CBEBIRR_API_KEY
+STATUS_PROBE_DASHEN_REFERENCE
+STATUS_PROBE_ABYSSINIA_REFERENCE
+STATUS_PROBE_ABYSSINIA_ACCOUNT_SUFFIX
+STATUS_PROBE_MPESA_REFERENCE
+```

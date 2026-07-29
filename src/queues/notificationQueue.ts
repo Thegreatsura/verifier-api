@@ -10,14 +10,24 @@ const RETRY_DELAYS_MS = [10_000, 30_000, 90_000] as const;
 const MAX_ATTEMPTS = RETRY_DELAYS_MS.length + 1;
 const COMPLETED_JOB_RETENTION = 500;
 const FAILED_JOB_RETENTION = 500;
+const RECONCILIATION_INTERVAL_MS = 60_000;
+const STALE_DELIVERY_AGE_MS = 60_000;
+const ACTIVE_JOB_STATES = new Set([
+  'active',
+  'delayed',
+  'prioritized',
+  'waiting',
+  'waiting-children',
+]);
 
 type NotificationChannelType = 'EMAIL' | 'TELEGRAM';
-type NotificationEventName =
+export type NotificationEventName =
   | 'payment_link.paid'
   | 'product.sold_out'
   | 'verification.success'
   | 'verification.failed'
-  | 'webhook.dead_letter';
+  | 'webhook.dead_letter'
+  | 'notification.test';
 
 export interface NotificationPayload {
   event: NotificationEventName;
@@ -56,6 +66,8 @@ let workerConnection: ConnectionOptions | null = null;
 let notificationQueue: Queue<NotificationDeliveryJobData, void, string> | null = null;
 let notificationWorker: Worker<NotificationDeliveryJobData, void, string> | null = null;
 let workerConnected = false;
+let reconciliationTimer: NodeJS.Timeout | null = null;
+let reconciliationRunning = false;
 
 function getRedisUrl(): string | null {
   return process.env.REDIS_URL?.trim() || null;
@@ -124,6 +136,8 @@ function buildEventTitle(event: NotificationEventName): string {
       return 'Verification failed';
     case 'webhook.dead_letter':
       return 'Webhook needs attention';
+    case 'notification.test':
+      return 'Notification channel test';
   }
 }
 
@@ -156,6 +170,8 @@ function buildEventMessage(event: NotificationEventName, payload: NotificationPa
         `A webhook delivery reached dead letter${payload.webhookUrl ? ` for ${String(payload.webhookUrl)}.` : '.'}`,
         payload.lastError ? `Error: ${String(payload.lastError)}.` : null,
       ].filter(Boolean).join(' ');
+    case 'notification.test':
+      return 'Your Veritas notification channel is configured and receiving queued deliveries.';
   }
 }
 
@@ -426,6 +442,101 @@ export async function enqueueNotificationDelivery(
   return { deliveryId: delivery.id };
 }
 
+export async function reconcileNotificationDeliveries(): Promise<number> {
+  if (!isNotificationQueueConfigured() || reconciliationRunning) return 0;
+
+  reconciliationRunning = true;
+  try {
+    const queue = getNotificationQueue();
+    const staleBefore = new Date(Date.now() - STALE_DELIVERY_AGE_MS);
+    const deliveries = await prisma.notificationDelivery.findMany({
+      where: {
+        status: { in: ['QUEUED', 'PROCESSING', 'RETRYING'] },
+        updatedAt: { lte: staleBefore },
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: 100,
+      select: {
+        id: true,
+        attempts: true,
+        maxAttempts: true,
+        queueJobId: true,
+      },
+    });
+
+    let recovered = 0;
+    for (const delivery of deliveries) {
+      const existingJob = delivery.queueJobId
+        ? await queue.getJob(delivery.queueJobId)
+        : null;
+      const existingState = existingJob ? await existingJob.getState() : null;
+
+      if (existingState && ACTIVE_JOB_STATES.has(existingState)) {
+        continue;
+      }
+
+      if (delivery.attempts >= delivery.maxAttempts) {
+        await prisma.notificationDelivery.update({
+          where: { id: delivery.id },
+          data: {
+            status: 'DEAD_LETTER',
+            success: false,
+            lastError: 'Delivery exhausted its attempts before queue reconciliation.',
+            nextRetryAt: null,
+          },
+        });
+        continue;
+      }
+
+      if (existingJob) {
+        const removed = await existingJob.remove().then(
+          () => true,
+          (error) => {
+            logger.warn(`Could not remove stale notification job ${existingJob.id}: ${String(error)}`);
+            return false;
+          },
+        );
+        if (!removed) continue;
+      }
+
+      await prisma.notificationDelivery.update({
+        where: { id: delivery.id },
+        data: {
+          status: 'QUEUED',
+          success: false,
+          nextRetryAt: null,
+        },
+      });
+
+      const attemptNumber = Math.max(1, delivery.attempts + 1);
+      const queueJobId = await enqueueAttempt(delivery.id, attemptNumber, 0);
+      await prisma.notificationDelivery.update({
+        where: { id: delivery.id },
+        data: { queueJobId },
+      });
+      recovered++;
+    }
+
+    if (recovered > 0) {
+      logger.warn(`Requeued ${recovered} stale notification deliver${recovered === 1 ? 'y' : 'ies'}.`);
+    }
+    return recovered;
+  } finally {
+    reconciliationRunning = false;
+  }
+}
+
+function startNotificationReconciliation(): void {
+  if (reconciliationTimer) return;
+
+  reconciliationTimer = setInterval(() => {
+    void reconcileNotificationDeliveries().catch((error) => {
+      logger.error('Notification delivery reconciliation failed:', error);
+    });
+  }, RECONCILIATION_INTERVAL_MS);
+  reconciliationTimer.unref();
+}
+
 export async function startNotificationQueueWorker(): Promise<void> {
   if (!isNotificationQueueConfigured()) {
     throw new Error('Notification queue requires REDIS_URL.');
@@ -467,6 +578,8 @@ export async function startNotificationQueueWorker(): Promise<void> {
     ]);
 
     workerConnected = true;
+    await reconcileNotificationDeliveries();
+    startNotificationReconciliation();
     logger.info('Notification queue worker started.');
   } catch (error) {
     workerConnected = false;
@@ -476,6 +589,11 @@ export async function startNotificationQueueWorker(): Promise<void> {
 }
 
 export async function stopNotificationQueueWorker(): Promise<void> {
+  if (reconciliationTimer) {
+    clearInterval(reconciliationTimer);
+    reconciliationTimer = null;
+  }
+
   await notificationWorker?.close();
   notificationWorker = null;
   workerConnected = false;

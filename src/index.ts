@@ -20,6 +20,7 @@ import ordersRouter from './routes/orders';
 import webhooksRouter from './routes/webhooks';
 import notificationsRouter from './routes/notifications';
 import adminRouter from './routes/adminRoute';
+import internalStatusRouter from './routes/internalStatus';
 import logger from './utils/logger';
 import { verifyImageHandler } from "./services/verifyImage";
 import { requestLogger, initializeStatsCache } from './middleware/requestLogger';
@@ -80,6 +81,9 @@ app.use(requestLogger);
 
 // Register admin routes BEFORE API key authentication
 app.use('/admin', adminRouter);
+
+// Signed status probes bypass customer auth, quotas, records, and delivery hooks.
+app.use('/internal/status', internalStatusRouter);
 
 // Add API key authentication middleware (will not affect admin routes)
 app.use(apiKeyAuth as express.RequestHandler);

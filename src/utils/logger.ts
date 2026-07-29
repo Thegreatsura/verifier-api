@@ -1,7 +1,18 @@
 import { createLogger, format, transports, Logger } from 'winston';
 import 'winston-daily-rotate-file';
+import { shouldSuppressSensitiveLogs } from './sensitiveLogContext';
 
 const { combine, timestamp, printf, errors, colorize } = format;
+
+const redactSensitiveStatusProbeLogs = format((info) => {
+    if (!shouldSuppressSensitiveLogs()) return info;
+    for (const key of Object.keys(info)) {
+        if (!['level', 'timestamp', 'service'].includes(key)) delete info[key];
+    }
+    info.message = 'Status provider probe activity redacted.';
+    info.statusProbe = true;
+    return info;
+});
 
 // 🎨 Fancy Console Format with Emojis and Timestamp
 const emojiFormat = printf(info => {
@@ -51,6 +62,7 @@ const errorRotateFile = new transports.DailyRotateFile({
     maxFiles: '14d',
     format: combine(
         errors({ stack: true }),
+        redactSensitiveStatusProbeLogs(),
         timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
         fileFormat
     )
