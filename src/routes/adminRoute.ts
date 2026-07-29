@@ -512,28 +512,11 @@ router.post(
           break;
         }
         case 'cbebirr': {
-          // CBE Birr needs the merchant's raw API key to talk to the bank's API.
-          // We pull any of the merchant's active keys that still has a raw value
-          // stored (legacy keys). New keys store only a hash and can't be used.
           if (!trimmedPhone) {
             verifyError = 'CBE Birr verification requires a phone number.';
             break;
           }
-          if (!merchantWorkspaceId) {
-            verifyError = 'CBE Birr verification requires merchantWorkspaceId.';
-            break;
-          }
-          const merchantKey = await prisma.apiKey.findFirst({
-            where: { workspaceId: merchantWorkspaceId, isActive: true, key: { not: null } },
-            select: { key: true },
-            orderBy: { createdAt: 'desc' },
-          });
-          if (!merchantKey?.key) {
-            verifyError =
-              'CBE Birr verification needs a legacy-format API key on the merchant account. Contact support to enable.';
-            break;
-          }
-          verifiedData = await verifyCBEBirr(trimmedRef, trimmedPhone, merchantKey.key);
+          verifiedData = await verifyCBEBirr(trimmedRef, trimmedPhone);
           break;
         }
         default:

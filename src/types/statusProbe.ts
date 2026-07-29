@@ -1,10 +1,10 @@
 export const STATUS_PROVIDERS = [
   'telebirr',
   'cbe',
+  'cbe-new',
   'cbe-birr',
   'dashen',
   'abyssinia',
-  'mpesa',
 ] as const;
 
 export type StatusProvider = (typeof STATUS_PROVIDERS)[number];

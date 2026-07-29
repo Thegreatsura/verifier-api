@@ -24,8 +24,7 @@ export interface CBEBirrReceipt {
 
 export async function verifyCBEBirr(
   receiptNumber: string,
-  phoneNumber: string,
-  apiKey: string
+  phoneNumber: string
 ): Promise<CBEBirrReceipt | { success: false; error: string }> {
   try {
     logger.info(`[CBEBirr] Starting verification for receipt: ${receiptNumber}, phone: ${phoneNumber}`);
@@ -38,7 +37,6 @@ export async function verifyCBEBirr(
     const response = await axios.get(url, {
       responseType: 'arraybuffer',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       },
       timeout: 30000
