@@ -81,6 +81,7 @@ export const apiKeyAuth = async (req: Request, res: Response, next: NextFunction
   if (
     req.path === '/' ||
     req.path === '/health' ||
+    req.path === '/ready' ||
     req.path.startsWith('/admin') ||
     /^\/payment-links\/[^/]+\/confirm$/.test(req.path) ||
     /^\/payment-links\/[^/]+\/public$/.test(req.path)

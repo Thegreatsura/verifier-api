@@ -9,3 +9,25 @@ services:
         value: production
       - key: LOG_LEVEL
         value: info
+      - key: STATUS_MONITOR_SECRET
+        sync: false
+      - key: STATUS_PROBE_TELEBIRR_REFERENCE
+        sync: false
+      - key: STATUS_PROBE_CBE_REFERENCE
+        sync: false
+      - key: STATUS_PROBE_CBE_ACCOUNT_SUFFIX
+        sync: false
+      - key: STATUS_PROBE_CBEBIRR_REFERENCE
+        sync: false
+      - key: STATUS_PROBE_CBEBIRR_PHONE
+        sync: false
+      - key: STATUS_PROBE_CBEBIRR_API_KEY
+        sync: false
+      - key: STATUS_PROBE_DASHEN_REFERENCE
+        sync: false
+      - key: STATUS_PROBE_ABYSSINIA_REFERENCE
+        sync: false
+      - key: STATUS_PROBE_ABYSSINIA_ACCOUNT_SUFFIX
+        sync: false
+      - key: STATUS_PROBE_MPESA_REFERENCE
+        sync: false

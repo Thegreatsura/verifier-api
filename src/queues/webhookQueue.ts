@@ -13,6 +13,15 @@ const RETRY_DELAYS_MS = [5_000, 15_000, 45_000] as const;
 const MAX_ATTEMPTS = RETRY_DELAYS_MS.length + 1;
 const COMPLETED_JOB_RETENTION = 500;
 const FAILED_JOB_RETENTION = 500;
+const RECONCILIATION_INTERVAL_MS = 60_000;
+const STALE_DELIVERY_AGE_MS = 60_000;
+const ACTIVE_JOB_STATES = new Set([
+  'active',
+  'delayed',
+  'prioritized',
+  'waiting',
+  'waiting-children',
+]);
 
 export interface WebhookPayload {
   event: string;
@@ -51,6 +60,8 @@ let workerConnection: ConnectionOptions | null = null;
 let deliveryQueue: Queue<WebhookDeliveryJobData, void, string> | null = null;
 let deliveryWorker: Worker<WebhookDeliveryJobData, void, string> | null = null;
 let workerConnected = false;
+let reconciliationTimer: NodeJS.Timeout | null = null;
+let reconciliationRunning = false;
 
 function getRedisUrl(): string | null {
   return process.env.REDIS_URL?.trim() || null;
@@ -362,6 +373,101 @@ export async function replayWebhookDelivery(
   });
 }
 
+export async function reconcileWebhookDeliveries(): Promise<number> {
+  if (!isWebhookQueueConfigured() || reconciliationRunning) return 0;
+
+  reconciliationRunning = true;
+  try {
+    const queue = getWebhookQueue();
+    const staleBefore = new Date(Date.now() - STALE_DELIVERY_AGE_MS);
+    const deliveries = await prisma.webhookDelivery.findMany({
+      where: {
+        status: { in: ['QUEUED', 'PROCESSING', 'RETRYING'] },
+        updatedAt: { lte: staleBefore },
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: 100,
+      select: {
+        id: true,
+        attempts: true,
+        maxAttempts: true,
+        queueJobId: true,
+      },
+    });
+
+    let recovered = 0;
+    for (const delivery of deliveries) {
+      const existingJob = delivery.queueJobId
+        ? await queue.getJob(delivery.queueJobId)
+        : null;
+      const existingState = existingJob ? await existingJob.getState() : null;
+
+      if (existingState && ACTIVE_JOB_STATES.has(existingState)) {
+        continue;
+      }
+
+      if (delivery.attempts >= delivery.maxAttempts) {
+        await prisma.webhookDelivery.update({
+          where: { id: delivery.id },
+          data: {
+            status: 'DEAD_LETTER',
+            success: false,
+            lastError: 'Delivery exhausted its attempts before queue reconciliation.',
+            nextRetryAt: null,
+          },
+        });
+        continue;
+      }
+
+      if (existingJob) {
+        const removed = await existingJob.remove().then(
+          () => true,
+          (error) => {
+            logger.warn(`Could not remove stale webhook job ${existingJob.id}: ${String(error)}`);
+            return false;
+          },
+        );
+        if (!removed) continue;
+      }
+
+      await prisma.webhookDelivery.update({
+        where: { id: delivery.id },
+        data: {
+          status: 'QUEUED',
+          success: false,
+          nextRetryAt: null,
+        },
+      });
+
+      const attemptNumber = Math.max(1, delivery.attempts + 1);
+      const queueJobId = await enqueueAttempt(delivery.id, attemptNumber, 0);
+      await prisma.webhookDelivery.update({
+        where: { id: delivery.id },
+        data: { queueJobId },
+      });
+      recovered++;
+    }
+
+    if (recovered > 0) {
+      logger.warn(`Requeued ${recovered} stale webhook deliver${recovered === 1 ? 'y' : 'ies'}.`);
+    }
+    return recovered;
+  } finally {
+    reconciliationRunning = false;
+  }
+}
+
+function startWebhookReconciliation(): void {
+  if (reconciliationTimer) return;
+
+  reconciliationTimer = setInterval(() => {
+    void reconcileWebhookDeliveries().catch((error) => {
+      logger.error('Webhook delivery reconciliation failed:', error);
+    });
+  }, RECONCILIATION_INTERVAL_MS);
+  reconciliationTimer.unref();
+}
+
 export async function getWebhookQueueHealth(): Promise<WebhookQueueHealth> {
   if (!isWebhookQueueConfigured()) {
     return {
@@ -447,6 +553,8 @@ export async function startWebhookQueueWorker(): Promise<void> {
     ]);
 
     workerConnected = true;
+    await reconcileWebhookDeliveries();
+    startWebhookReconciliation();
     logger.info('Webhook queue worker started.');
   } catch (error) {
     workerConnected = false;
@@ -456,6 +564,11 @@ export async function startWebhookQueueWorker(): Promise<void> {
 }
 
 export async function stopWebhookQueueWorker(): Promise<void> {
+  if (reconciliationTimer) {
+    clearInterval(reconciliationTimer);
+    reconciliationTimer = null;
+  }
+
   await deliveryWorker?.close();
   deliveryWorker = null;
   workerConnected = false;
