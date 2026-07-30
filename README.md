@@ -522,6 +522,19 @@ NODE_ENV=development # or production
 LOG_LEVEL=info       # or debug, error
 MISTRAL_API_KEY=your_mistral_api_key # Required for image verification
 SKIP_PRIMARY_VERIFICATION=false      # Set to true to bypass primary fetch
+FALLBACK_PROXIES=https://example.et/telebirr?reference=,https://relay.example/telebirr?reference=
+TELEBIRR_PROXY_KEY=your_proxy_key
+# Optional public labels in the same order. Raw relay URLs are never exposed.
+TELEBIRR_PROXY_LABELS=leul.et,Community relay 1
+# Runtime relay routing: hedge after 1s, cool failed routes for 60s,
+# allow at most two in flight, and cap the whole request at 10s.
+TELEBIRR_PROXY_TIMEOUT_MS=6000
+TELEBIRR_HEDGE_DELAY_MS=1000
+TELEBIRR_PROXY_COOLDOWN_MS=60000
+TELEBIRR_MAX_PARALLEL_PROXIES=2
+TELEBIRR_TOTAL_TIMEOUT_MS=10000
+# Independent timeout used when the status monitor checks every relay.
+STATUS_PROBE_TELEBIRR_PROXY_TIMEOUT_MS=12000
 ```
 
 You can get an API key for Mistral AI from [https://mistral.ai/](https://mistral.ai/)

@@ -13,21 +13,33 @@ services:
         sync: false
       - key: STATUS_PROBE_TELEBIRR_REFERENCE
         sync: false
-      - key: STATUS_PROBE_CBE_REFERENCE
+      - key: STATUS_PROBE_TELEBIRR_PROXY_TIMEOUT_MS
+        value: "12000"
+      - key: TELEBIRR_PROXY_LABELS
         sync: false
-      - key: STATUS_PROBE_CBE_ACCOUNT_SUFFIX
+      - key: TELEBIRR_PROXY_TIMEOUT_MS
+        value: "6000"
+      - key: TELEBIRR_HEDGE_DELAY_MS
+        value: "1000"
+      - key: TELEBIRR_PROXY_COOLDOWN_MS
+        value: "60000"
+      - key: TELEBIRR_MAX_PARALLEL_PROXIES
+        value: "2"
+      - key: TELEBIRR_TOTAL_TIMEOUT_MS
+        value: "10000"
+      - key: STATUS_PROBE_CBE_LEGACY_REFERENCE
+        sync: false
+      - key: STATUS_PROBE_CBE_LEGACY_ACCOUNT_SUFFIX
+        sync: false
+      - key: STATUS_PROBE_CBE_NEW_URL
         sync: false
       - key: STATUS_PROBE_CBEBIRR_REFERENCE
         sync: false
       - key: STATUS_PROBE_CBEBIRR_PHONE
-        sync: false
-      - key: STATUS_PROBE_CBEBIRR_API_KEY
         sync: false
       - key: STATUS_PROBE_DASHEN_REFERENCE
         sync: false
       - key: STATUS_PROBE_ABYSSINIA_REFERENCE
         sync: false
       - key: STATUS_PROBE_ABYSSINIA_ACCOUNT_SUFFIX
-        sync: false
-      - key: STATUS_PROBE_MPESA_REFERENCE
         sync: false
