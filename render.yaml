@@ -14,19 +14,21 @@ services:
       - key: STATUS_PROBE_TELEBIRR_REFERENCE
         sync: false
       - key: STATUS_PROBE_TELEBIRR_PROXY_TIMEOUT_MS
-        value: "12000"
+        value: "18000"
       - key: TELEBIRR_PROXY_LABELS
         sync: false
       - key: TELEBIRR_PROXY_TIMEOUT_MS
-        value: "6000"
+        value: "18000"
       - key: TELEBIRR_HEDGE_DELAY_MS
         value: "1000"
       - key: TELEBIRR_PROXY_COOLDOWN_MS
         value: "60000"
+      - key: TELEBIRR_PROXY_FAILURE_THRESHOLD
+        value: "2"
       - key: TELEBIRR_MAX_PARALLEL_PROXIES
         value: "2"
       - key: TELEBIRR_TOTAL_TIMEOUT_MS
-        value: "10000"
+        value: "20000"
       - key: STATUS_PROBE_CBE_LEGACY_REFERENCE
         sync: false
       - key: STATUS_PROBE_CBE_LEGACY_ACCOUNT_SUFFIX

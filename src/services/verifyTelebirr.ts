@@ -560,6 +560,7 @@ interface TelebirrProxyAttemptResult {
     descriptor: TelebirrProxyDescriptor;
     receipt: TelebirrReceipt | null;
     failureKind: TelebirrVerificationError['kind'] | null;
+    error: TelebirrVerificationError | null;
     latencyMs: number;
 }
 
@@ -613,13 +614,20 @@ function recordProxySuccess(
 
 function recordProxyTransportFailure(
     descriptor: TelebirrProxyDescriptor,
-    cooldownMs: number
+    cooldownMs: number,
+    failureThreshold: number
 ): void {
     const state = proxyRuntimeState(descriptor.url);
     state.consecutiveFailures += 1;
-    state.circuitOpenUntil = Date.now() + cooldownMs;
+    state.circuitOpenUntil =
+        state.consecutiveFailures >= failureThreshold
+            ? Date.now() + cooldownMs
+            : 0;
 
-    if (activeTelebirrProxyUrl === descriptor.url) {
+    if (
+        state.circuitOpenUntil > Date.now() &&
+        activeTelebirrProxyUrl === descriptor.url
+    ) {
         activeTelebirrProxyUrl = null;
     }
 }
@@ -632,8 +640,7 @@ function orderedAvailableProxies(
         descriptors.map((descriptor, index) => [descriptor.url, index])
     );
 
-    return descriptors
-        .filter(descriptor => proxyRuntimeState(descriptor.url).circuitOpenUntil <= now)
+    const ordered = [...descriptors]
         .sort((left, right) => {
             const leftIsActive = left.url === activeTelebirrProxyUrl;
             const rightIsActive = right.url === activeTelebirrProxyUrl;
@@ -658,6 +665,22 @@ function orderedAvailableProxies(
                 (originalOrder.get(right.url) ?? Number.MAX_SAFE_INTEGER)
             );
         });
+
+    const available = ordered.filter(
+        descriptor => proxyRuntimeState(descriptor.url).circuitOpenUntil <= now
+    );
+    if (available.length > 0) return available;
+
+    // Never let stale circuit state make a healthy tunnel permanently
+    // unreachable. If every route is cooling down, allow one half-open
+    // recovery attempt using the route whose cooldown expires first.
+    return ordered
+        .sort(
+            (left, right) =>
+                proxyRuntimeState(left.url).circuitOpenUntil -
+                proxyRuntimeState(right.url).circuitOpenUntil
+        )
+        .slice(0, 1);
 }
 
 async function verifyWithTelebirrProxyPool(
@@ -667,7 +690,7 @@ async function verifyWithTelebirrProxyPool(
 ): Promise<TelebirrReceipt | null> {
     const proxyTimeoutMs = positiveInteger(
         env.TELEBIRR_PROXY_TIMEOUT_MS,
-        6_000
+        18_000
     );
     const hedgeDelayMs = positiveInteger(
         env.TELEBIRR_HEDGE_DELAY_MS,
@@ -679,7 +702,11 @@ async function verifyWithTelebirrProxyPool(
     );
     const totalTimeoutMs = positiveInteger(
         env.TELEBIRR_TOTAL_TIMEOUT_MS,
-        10_000
+        20_000
+    );
+    const failureThreshold = positiveInteger(
+        env.TELEBIRR_PROXY_FAILURE_THRESHOLD,
+        2
     );
     const maxParallel = Math.min(
         Math.max(1, positiveInteger(env.TELEBIRR_MAX_PARALLEL_PROXIES, 2)),
@@ -689,14 +716,11 @@ async function verifyWithTelebirrProxyPool(
     const deadlineAt = Date.now() + totalTimeoutMs;
     const candidates = orderedAvailableProxies(descriptors, Date.now());
 
-    if (candidates.length === 0) {
-        logger.warn('All Telebirr relay circuits are cooling down.');
-        return null;
-    }
-
     let nextCandidateIndex = 0;
     let nextToken = 0;
     const inFlight: TelebirrProxyInFlight[] = [];
+    let lastTransportError: TelebirrVerificationError | null = null;
+    let sawDomainFailure = false;
     let deadlineTimer: NodeJS.Timeout | undefined;
     const deadlinePromise = new Promise<TelebirrProxyPoolEvent>(resolve => {
         deadlineTimer = setTimeout(
@@ -742,18 +766,25 @@ async function verifyWithTelebirrProxyPool(
                             ? receipt
                             : null,
                     failureKind: null,
+                    error: null,
                     latencyMs: Math.round(performance.now() - startedAt)
                 };
             } catch (error) {
+                const verificationError =
+                    error instanceof TelebirrVerificationError
+                        ? error
+                        : new TelebirrVerificationError(
+                            'The fallback relay is unreachable or timed out.',
+                            error instanceof Error ? error.message : undefined,
+                            'transport'
+                        );
                 return {
                     kind: 'attempt',
                     token,
                     descriptor,
                     receipt: null,
-                    failureKind:
-                        error instanceof TelebirrVerificationError
-                            ? error.kind
-                            : 'transport',
+                    failureKind: verificationError.kind,
+                    error: verificationError,
                     latencyMs: Math.round(performance.now() - startedAt)
                 };
             }
@@ -795,11 +826,19 @@ async function verifyWithTelebirrProxyPool(
 
             if (event.kind === 'deadline') {
                 for (const attempt of inFlight) {
-                    recordProxyTransportFailure(attempt.descriptor, cooldownMs);
+                    recordProxyTransportFailure(
+                        attempt.descriptor,
+                        cooldownMs,
+                        failureThreshold
+                    );
                     attempt.controller.abort();
                 }
                 logger.warn('Telebirr relay pool reached its total deadline.');
-                return null;
+                throw new TelebirrVerificationError(
+                    'Telebirr relays did not respond before the verification deadline.',
+                    undefined,
+                    'transport'
+                );
             }
 
             if (event.kind === 'hedge') {
@@ -827,12 +866,22 @@ async function verifyWithTelebirrProxyPool(
             }
 
             if (event.failureKind === 'transport') {
-                recordProxyTransportFailure(event.descriptor, cooldownMs);
+                recordProxyTransportFailure(
+                    event.descriptor,
+                    cooldownMs,
+                    failureThreshold
+                );
+                lastTransportError = event.error;
+            } else if (event.failureKind === 'domain') {
+                sawDomainFailure = true;
             }
 
             startNextCandidate();
         }
 
+        if (lastTransportError && !sawDomainFailure) {
+            throw lastTransportError;
+        }
         return null;
     } finally {
         if (deadlineTimer) clearTimeout(deadlineTimer);
@@ -846,11 +895,7 @@ export async function probeTelebirrProxyPool(
     const descriptors = getTelebirrProxyDescriptors(env);
     const timeoutMs = positiveInteger(
         env.STATUS_PROBE_TELEBIRR_PROXY_TIMEOUT_MS,
-        12_000
-    );
-    const cooldownMs = positiveInteger(
-        env.TELEBIRR_PROXY_COOLDOWN_MS,
-        60_000
+        18_000
     );
     const proxyKey = env.TELEBIRR_PROXY_KEY ?? '';
 
@@ -865,9 +910,6 @@ export async function probeTelebirrProxyPool(
                 });
                 const operational = Boolean(receipt && isValidReceipt(receipt));
                 const latencyMs = Math.round(performance.now() - startedAt);
-                if (operational) {
-                    recordProxySuccess(descriptor, latencyMs, false);
-                }
                 return {
                     id: descriptor.id,
                     label: descriptor.label,
@@ -875,13 +917,7 @@ export async function probeTelebirrProxyPool(
                     status: operational ? 'operational' : 'unavailable',
                     latencyMs
                 };
-            } catch (error) {
-                if (
-                    error instanceof TelebirrVerificationError &&
-                    error.kind === 'transport'
-                ) {
-                    recordProxyTransportFailure(descriptor, cooldownMs);
-                }
+            } catch {
                 return {
                     id: descriptor.id,
                     label: descriptor.label,
@@ -893,10 +929,6 @@ export async function probeTelebirrProxyPool(
         })
     );
     const active = routes.find(route => route.status === 'operational') ?? null;
-    const activeDescriptor = active
-        ? descriptors.find(descriptor => descriptor.id === active.id)
-        : null;
-    activeTelebirrProxyUrl = activeDescriptor?.url ?? null;
 
     return {
         activeRouteId: active?.id ?? null,

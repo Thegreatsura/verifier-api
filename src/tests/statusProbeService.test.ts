@@ -15,15 +15,19 @@ import {
 } from '../services/statusProbeService';
 import {
   getTelebirrProxyDescriptors,
+  TelebirrVerificationError,
   verifyTelebirr,
 } from '../services/verifyTelebirr';
 
 const TELEBIRR_ENV_KEYS = [
   'FALLBACK_PROXIES',
   'SKIP_PRIMARY_VERIFICATION',
+  'STATUS_PROBE_TELEBIRR_PROXY_TIMEOUT_MS',
+  'STATUS_PROBE_TELEBIRR_REFERENCE',
   'TELEBIRR_HEDGE_DELAY_MS',
   'TELEBIRR_MAX_PARALLEL_PROXIES',
   'TELEBIRR_PROXY_COOLDOWN_MS',
+  'TELEBIRR_PROXY_FAILURE_THRESHOLD',
   'TELEBIRR_PROXY_KEY',
   'TELEBIRR_PROXY_TIMEOUT_MS',
   'TELEBIRR_TOTAL_TIMEOUT_MS',
@@ -214,7 +218,7 @@ test('hedges a slow preferred relay and reuses the winning fallback', async () =
   }
 });
 
-test('opens the circuit for a transport-failing relay', async () => {
+test('opens the circuit only after the configured transport-failure threshold', async () => {
   let preferredRequests = 0;
   const preferred = await listen((_request, response) => {
     preferredRequests += 1;
@@ -222,11 +226,8 @@ test('opens the circuit for a transport-failing relay', async () => {
     response.end('unavailable');
   });
   const fallback = await listen((_request, response) => {
-    setTimeout(() => {
-      if (response.destroyed) return;
-      response.setHeader('content-type', 'application/json');
-      response.end(validTelebirrResponse('CIRCUIT-FALLBACK'));
-    }, 80);
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ success: false, error: 'Receipt not found' }));
   });
 
   try {
@@ -237,22 +238,18 @@ test('opens the circuit for a transport-failing relay', async () => {
         TELEBIRR_HEDGE_DELAY_MS: '20',
         TELEBIRR_MAX_PARALLEL_PROXIES: '2',
         TELEBIRR_PROXY_COOLDOWN_MS: '5000',
+        TELEBIRR_PROXY_FAILURE_THRESHOLD: '2',
         TELEBIRR_PROXY_TIMEOUT_MS: '500',
         TELEBIRR_TOTAL_TIMEOUT_MS: '1000',
       },
       async () => {
-        assert.equal(
-          (await verifyTelebirr('TEST-REFERENCE'))?.receiptNo,
-          'CIRCUIT-FALLBACK',
-        );
-        assert.equal(
-          (await verifyTelebirr('TEST-REFERENCE'))?.receiptNo,
-          'CIRCUIT-FALLBACK',
-        );
+        assert.equal(await verifyTelebirr('TEST-REFERENCE'), null);
+        assert.equal(await verifyTelebirr('TEST-REFERENCE'), null);
+        assert.equal(await verifyTelebirr('TEST-REFERENCE'), null);
         assert.equal(
           preferredRequests,
-          1,
-          'the failed relay should be skipped during its cooldown',
+          2,
+          'one transient failure should be retried before the circuit opens',
         );
       },
     );
@@ -261,6 +258,125 @@ test('opens the circuit for a transport-failing relay', async () => {
       closeServer(preferred.server),
       closeServer(fallback.server),
     ]);
+  }
+});
+
+test('status probes do not change live Telebirr relay routing state', async () => {
+  let preferredHealthy = false;
+  const preferred = await listen((_request, response) => {
+    if (!preferredHealthy) {
+      response.statusCode = 503;
+      response.end('temporarily unavailable');
+      return;
+    }
+    response.setHeader('content-type', 'application/json');
+    response.end(validTelebirrResponse('PREFERRED-RECOVERED'));
+  });
+  const fallback = await listen((_request, response) => {
+    response.setHeader('content-type', 'application/json');
+    response.end(validTelebirrResponse('FALLBACK-STATUS'));
+  });
+
+  try {
+    await withTelebirrEnv(
+      {
+        FALLBACK_PROXIES: `${preferred.proxyUrl},${fallback.proxyUrl}`,
+        SKIP_PRIMARY_VERIFICATION: 'true',
+        STATUS_PROBE_TELEBIRR_REFERENCE: 'TEST-REFERENCE',
+        STATUS_PROBE_TELEBIRR_PROXY_TIMEOUT_MS: '500',
+        TELEBIRR_HEDGE_DELAY_MS: '100',
+        TELEBIRR_MAX_PARALLEL_PROXIES: '2',
+        TELEBIRR_PROXY_COOLDOWN_MS: '5000',
+        TELEBIRR_PROXY_FAILURE_THRESHOLD: '1',
+        TELEBIRR_PROXY_TIMEOUT_MS: '500',
+        TELEBIRR_TOTAL_TIMEOUT_MS: '1000',
+      },
+      async () => {
+        const probe = await runStatusProviderProbe('telebirr', process.env);
+        assert.equal(probe.resultCode, 'FALLBACK_ACTIVE');
+
+        preferredHealthy = true;
+        const verification = await verifyTelebirr('TEST-REFERENCE');
+        assert.equal(verification?.receiptNo, 'PREFERRED-RECOVERED');
+      },
+    );
+  } finally {
+    await Promise.all([
+      closeServer(preferred.server),
+      closeServer(fallback.server),
+    ]);
+  }
+});
+
+test('allows a half-open recovery attempt when every relay circuit is open', async () => {
+  let healthy = false;
+  let requests = 0;
+  const relay = await listen((_request, response) => {
+    requests += 1;
+    if (!healthy) {
+      response.statusCode = 503;
+      response.end('temporarily unavailable');
+      return;
+    }
+    response.setHeader('content-type', 'application/json');
+    response.end(validTelebirrResponse('HALF-OPEN-RECOVERY'));
+  });
+
+  try {
+    await withTelebirrEnv(
+      {
+        FALLBACK_PROXIES: relay.proxyUrl,
+        SKIP_PRIMARY_VERIFICATION: 'true',
+        TELEBIRR_PROXY_COOLDOWN_MS: '5000',
+        TELEBIRR_PROXY_FAILURE_THRESHOLD: '1',
+        TELEBIRR_PROXY_TIMEOUT_MS: '500',
+        TELEBIRR_TOTAL_TIMEOUT_MS: '1000',
+      },
+      async () => {
+        await assert.rejects(
+          () => verifyTelebirr('TEST-REFERENCE'),
+          (error: unknown) =>
+            error instanceof TelebirrVerificationError &&
+            error.kind === 'transport',
+        );
+
+        healthy = true;
+        const recovered = await verifyTelebirr('TEST-REFERENCE');
+        assert.equal(recovered?.receiptNo, 'HALF-OPEN-RECOVERY');
+        assert.equal(requests, 2);
+      },
+    );
+  } finally {
+    await closeServer(relay.server);
+  }
+});
+
+test('surfaces an all-relay transport failure instead of reporting receipt not found', async () => {
+  const relay = await listen((_request, response) => {
+    response.statusCode = 502;
+    response.end('bad gateway');
+  });
+
+  try {
+    await withTelebirrEnv(
+      {
+        FALLBACK_PROXIES: relay.proxyUrl,
+        SKIP_PRIMARY_VERIFICATION: 'true',
+        TELEBIRR_PROXY_FAILURE_THRESHOLD: '2',
+        TELEBIRR_PROXY_TIMEOUT_MS: '500',
+        TELEBIRR_TOTAL_TIMEOUT_MS: '1000',
+      },
+      async () => {
+        await assert.rejects(
+          () => verifyTelebirr('TEST-REFERENCE'),
+          (error: unknown) =>
+            error instanceof TelebirrVerificationError &&
+            error.kind === 'transport',
+        );
+      },
+    );
+  } finally {
+    await closeServer(relay.server);
   }
 });
 
