@@ -2,9 +2,10 @@ import { verifyAbyssinia } from './verifyAbyssinia';
 import { verifyCBE } from './verifyCBE';
 import { verifyCBEBirr } from './verifyCBEBirr';
 import { verifyDashen } from './verifyDashen';
-import { verifyTelebirr } from './verifyTelebirr';
+import { probeTelebirrProxyPool } from './verifyTelebirr';
 import type {
   StatusCapabilities,
+  TelebirrProbeDetails,
   StatusProbeResult,
   StatusProvider,
   StatusProbeResultCode,
@@ -43,12 +44,18 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise
 function providerOperation(
   provider: StatusProvider,
   env: NodeJS.ProcessEnv,
-): (() => Promise<boolean>) | null {
+): (() => Promise<{ healthy: boolean; telebirr?: TelebirrProbeDetails }>) | null {
   switch (provider) {
     case 'telebirr': {
       const reference = env.STATUS_PROBE_TELEBIRR_REFERENCE;
       if (!reference?.trim()) return null;
-      return async () => (await verifyTelebirr(reference)) !== null;
+      return async () => {
+        const telebirr = await probeTelebirrProxyPool(reference, env);
+        return {
+          healthy: Boolean(telebirr.activeRouteId),
+          telebirr,
+        };
+      };
     }
     case 'cbe': {
       const reference =
@@ -58,13 +65,16 @@ function providerOperation(
         env.STATUS_PROBE_CBE_LEGACY_ACCOUNT_SUFFIX ??
         env.STATUS_PROBE_CBE_ACCOUNT_SUFFIX;
       if (!reference?.trim() || !suffix?.trim()) return null;
-      return async () =>
-        (await verifyCBE(reference, suffix)).success;
+      return async () => ({
+        healthy: (await verifyCBE(reference, suffix)).success,
+      });
     }
     case 'cbe-new': {
       const receiptUrl = env.STATUS_PROBE_CBE_NEW_URL;
       if (!receiptUrl?.trim()) return null;
-      return async () => (await verifyCBE(receiptUrl)).success;
+      return async () => ({
+        healthy: (await verifyCBE(receiptUrl)).success,
+      });
     }
     case 'cbe-birr': {
       const reference = env.STATUS_PROBE_CBEBIRR_REFERENCE;
@@ -72,19 +82,25 @@ function providerOperation(
       if (!reference?.trim() || !phone?.trim()) return null;
       return async () => {
         const result = await verifyCBEBirr(reference, phone);
-        return !('success' in result) || result.success !== false;
+        return {
+          healthy: !('success' in result) || result.success !== false,
+        };
       };
     }
     case 'dashen': {
       const reference = env.STATUS_PROBE_DASHEN_REFERENCE;
       if (!reference?.trim()) return null;
-      return async () => (await verifyDashen(reference)).success;
+      return async () => ({
+        healthy: (await verifyDashen(reference)).success,
+      });
     }
     case 'abyssinia': {
       const reference = env.STATUS_PROBE_ABYSSINIA_REFERENCE;
       const suffix = env.STATUS_PROBE_ABYSSINIA_ACCOUNT_SUFFIX;
       if (!reference?.trim() || !suffix?.trim()) return null;
-      return async () => (await verifyAbyssinia(reference, suffix)).success;
+      return async () => ({
+        healthy: (await verifyAbyssinia(reference, suffix)).success,
+      });
     }
   }
 }
@@ -103,6 +119,16 @@ export function classifyProbeResult(input: {
   return input.durationMs >= (input.slowMs ?? DEFAULT_SLOW_MS)
     ? 'UPSTREAM_SLOW'
     : 'PROBE_OK';
+}
+
+export function isHealthyProbeResultCode(
+  resultCode: StatusProbeResultCode,
+): boolean {
+  return (
+    resultCode === 'PROBE_OK' ||
+    resultCode === 'UPSTREAM_SLOW' ||
+    resultCode === 'FALLBACK_ACTIVE'
+  );
 }
 
 export async function runStatusProviderProbe(
@@ -126,31 +152,43 @@ export async function runStatusProviderProbe(
   const slowMs = parsePositiveInteger(env.STATUS_PROBE_SLOW_MS, DEFAULT_SLOW_MS);
   const startedAt = performance.now();
   let healthy = false;
+  let telebirr: TelebirrProbeDetails | undefined;
   let error: unknown;
   try {
-    healthy = await runWithSensitiveLogsSuppressed(() =>
+    const outcome = await runWithSensitiveLogsSuppressed(() =>
       withTimeout(operation(), timeoutMs),
     );
+    healthy = outcome.healthy;
+    telebirr = outcome.telebirr;
   } catch (caught) {
     error = caught;
   }
   const durationMs = Math.round(performance.now() - startedAt);
-  const resultCode = classifyProbeResult({
+  let resultCode = classifyProbeResult({
     configured: true,
     healthy,
     durationMs,
     slowMs,
     error,
   });
+  if (telebirr) {
+    if (!telebirr.activeRouteId) {
+      resultCode = 'ALL_ROUTES_UNAVAILABLE';
+    } else if (!telebirr.preferredRouteAvailable) {
+      resultCode = 'FALLBACK_ACTIVE';
+    }
+  }
+
+  const pathHealthy = isHealthyProbeResultCode(resultCode);
 
   return {
     provider,
-    reachable: resultCode === 'PROBE_OK' || resultCode === 'UPSTREAM_SLOW',
-    verificationPathHealthy:
-      resultCode === 'PROBE_OK' || resultCode === 'UPSTREAM_SLOW',
+    reachable: pathHealthy,
+    verificationPathHealthy: pathHealthy,
     durationMs,
     checkedAt,
     resultCode,
+    ...(telebirr ? { telebirr } : {}),
   };
 }
 
